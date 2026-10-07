@@ -1,0 +1,4 @@
+extends: plaza.yaml               # shared settings for every clip of this site
+site: plaza_clip1                 # -> runs/plaza_clip1/...
+video: ../footage/plaza_clip1.mp4
+homography: ../calibration/plaza_clip1_homography.json

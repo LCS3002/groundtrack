@@ -1,0 +1,60 @@
+# groundtrack site config: motorway
+# Paths are relative to this file. Run `groundtrack calibrate --config sites/motorway.yaml` first.
+site: motorway
+video: ../footage/motorway.mp4
+geotiff: ../maps/motorway.tif              # north-up GeoTIFF in EPSG:27700 (QGIS / Digimap export)
+homography: ../calibration/motorway_homography.json
+lens: null                                # ../calibration/phone_1x_lens.json (optional)
+output_dir: ../runs
+models_dir: ../models                     # YOLO weights are downloaded here on first use
+device: auto                             # auto | cuda | mps | cpu
+fps: null                                 # set only if the video reports a wrong frame rate
+
+detection:
+  model: yolo26m.pt
+  imgsz: 1920               # cars are small from the high-rise: use the full 1920 px width
+  conf: 0.3
+  tracker: bytetrack
+  track_buffer_s: 1.0
+  vid_stride: 1
+  roi: null                 # strongly recommended: cut the far, blurry end of the road
+  record_predicted: true
+  suppress_riders: true
+  stabilize: true           # compensate camera movement (see README)
+
+groups:
+  vehicles:
+    classes: [car, motorcycle, bus, truck]
+    speed_range: [0.0, 35.0]          # m/s (35 m/s = 126 km/h)
+    max_speed: 70.0
+    smooth_window_s: 0.6
+    # half vehicle length; per class mapping allowed
+    ground_offset_m: {default: 2.2, bus: 5.5, truck: 5.0, motorcycle: 1.0}
+    offset_mode: view                 # both carriageways in shot -> view (see README)
+    vehicle_width_m: 1.8
+
+cleaning:
+  min_track_s: 1.0
+  max_gap_s: 1.5
+
+grid:
+  cell_size_m: 2.0
+  include_predicted: false
+
+field:                      # smoothed vector field for Houdini particle sims
+  cell_size_m: 2.0
+  smooth_m: 4.0             # keeps the two carriageways apart if they are > ~10 m apart
+  time_window_s: 10         # traffic pulses (lights, queues) show up as an animated field
+
+stats:
+  histogram_bins: 28
+  count_lines: []           # one line across each carriageway gives directional flows
+
+visuals:
+  extent: data
+  margin_m: 15.0
+  line_width: 0.8
+
+debug_video:
+  enabled: false
+  blur_people: true
