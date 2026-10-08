@@ -138,3 +138,97 @@ def _legend(img, cfg: Config, groups):
         cv2.putText(img, t, (x + bw - 8 * len(t), y + bh + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                     (255, 255, 255), 1, cv2.LINE_AA)
         y += 46
+
+
+def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: GeoRaster | None,
+                           cfg: Config, out_path: Path, ext, cell: float, speed_range,
+                           seconds: float = 12.0, fps: float = 30.0, width: int = 1920,
+                           n_particles: int | None = None, time_scale: float = 1.0,
+                           min_confidence: float = 0.25, seed: int = 0, log=print) -> None:
+    """flowfield.mp4: particles streaming through the smoothed vector field over the map
+    (the same field houdini_field.py hands to a particle sim), coloured by speed."""
+    from scipy.ndimage import map_coordinates
+    from tqdm import tqdm
+
+    from .field import field_to_arrays
+
+    if field.empty:
+        log("flow-field video: empty field")
+        return
+    vis = cfg["visuals"]
+    base = _base_image(raster, ext, width, float(vis["basemap_brightness"]) * 0.8)
+    H, W = base.shape[:2]
+    x0, x1, y0, y1 = ext
+    sx, sy = W / (x1 - x0), H / (y1 - y0)
+    xs, ys, U, V, S, C = field_to_arrays(field, cell)
+    U, V = np.nan_to_num(U), np.nan_to_num(V)
+    gx0, gy0 = xs[0], ys[0]
+
+    def sample(arr, px, py):  # bilinear lookup at world positions
+        fi = (px - gx0) / cell
+        fj = (py - gy0) / cell
+        return map_coordinates(arr, [fj, fi], order=1, mode="constant", cval=0.0)
+
+    rng = np.random.default_rng(seed)
+    jj, ii = np.nonzero(C >= min_confidence)
+    if len(ii) == 0:
+        log("flow-field video: no confident cells")
+        return
+    area = len(ii) * cell * cell
+    n = n_particles or int(np.clip(area / (cell * cell) * 1.5, 800, 6000))
+    weights = C[jj, ii] / C[jj, ii].sum()
+
+    def spawn(k):
+        pick = rng.choice(len(ii), size=k, p=weights)
+        return (xs[ii[pick]] + rng.uniform(-0.5, 0.5, k) * cell,
+                ys[jj[pick]] + rng.uniform(-0.5, 0.5, k) * cell,
+                rng.uniform(1.5, 4.0, k))
+
+    px, py, life = spawn(n)
+    age = rng.uniform(0, 1, n) * life
+    trails = np.zeros((H, W, 3), np.float32)
+    lo, hi = speed_range
+    dt = time_scale / fps
+    th = max(1, int(round(W / 1100)))
+    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
+    for _ in tqdm(range(int(seconds * fps)), desc="flow-field video", unit="frame",
+                  mininterval=2.0):
+        u, v = sample(U, px, py), sample(V, px, py)
+        # midpoint (RK2) step for smooth curves
+        mx, my = px + 0.5 * u * dt, py + 0.5 * v * dt
+        u2, v2 = sample(U, mx, my), sample(V, mx, my)
+        nx, ny = px + u2 * dt, py + v2 * dt
+        spd = np.hypot(u2, v2)
+        cols = (ramp_rgb(spd, lo, hi)[:, ::-1] * 255).astype(np.float32)
+        trails *= 0.93
+        p0 = np.column_stack([(px - x0) * sx, (y1 - py) * sy]).astype(np.int32)
+        p1 = np.column_stack([(nx - x0) * sx, (y1 - ny) * sy]).astype(np.int32)
+        for a, b, c in zip(p0, p1, cols):
+            cv2.line(trails, tuple(a), tuple(b), tuple(float(x) for x in c), th, cv2.LINE_AA)
+        px, py, age = nx, ny, age + dt / time_scale
+        conf = sample(C, px, py)
+        dead = (age > life) | (conf < min_confidence * 0.6) | (px < x0) | (px > x1) | \
+               (py < y0) | (py > y1)
+        if dead.any():
+            px[dead], py[dead], life[dead] = spawn(int(dead.sum()))
+            age[dead] = 0.0
+        glow = np.clip(trails, 0, 255)
+        mask = (glow.max(axis=2, keepdims=True) / 255.0) ** 0.8
+        img = (base * (1 - mask) + glow * mask).astype(np.uint8)
+        cv2.putText(img, f"{cfg.site}: smoothed vector field", (16, 34), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        bl = int(_nice(x1 - x0) * sx)
+        cv2.rectangle(img, (14, H - 44), (30 + bl, H - 12), (240, 240, 240), -1)
+        for k in range(4):
+            c = INK if k % 2 == 0 else (255, 255, 255)
+            cv2.rectangle(img, (22 + k * bl // 4, H - 36), (22 + (k + 1) * bl // 4, H - 28), c, -1)
+        cv2.putText(img, f"{_nice(x1 - x0):g} m", (22 + bl - 40, H - 16), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, INK, 1, cv2.LINE_AA)
+        cv2.arrowedLine(img, (W - 40, 90), (W - 40, 40), (255, 255, 255), 3, cv2.LINE_AA,
+                        tipLength=0.35)
+        cv2.putText(img, "N", (W - 48, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+                    cv2.LINE_AA)
+        _legend(img, cfg, sorted(set(points["group"])))
+        writer.write(img)
+    writer.release()
+    log(f"flow-field video -> {out_path}")

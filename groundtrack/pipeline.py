@@ -93,6 +93,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         raw = pd.read_csv(run_dir / "raw_tracks.csv")
     video = video or Path(meta["video"])
     h, lens = load_calibration(cfg, video if video.exists() else None)
+    # keep the run's calibration snapshot in sync with the one these results are made with
+    # (the overlay video projects the results back into the footage with it)
+    shutil.copy2(cfg.path("homography"), run_dir / "homography_used.json")
     fps, stride = float(meta["fps"]), int(meta["vid_stride"])
 
     reg = load_run_registration(run_dir, h, log)
@@ -161,6 +164,15 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
                              visuals._extent(points, raster, cfg),
                              speedup=float(cfg["visuals"].get("topdown_video_speedup", 1.0)),
                              log=log)
+    if cfg["visuals"].get("flowfield_video", True) and len(points):
+        from .animation import render_flowfield_video
+
+        gname = sorted(set(points["group"]))[0]
+        out["flowfield_video"] = run_dir / "flowfield.mp4"
+        render_flowfield_video(pd.read_csv(run_dir / "vector_field.csv"), points, raster, cfg,
+                               out["flowfield_video"], visuals._extent(points, raster, cfg),
+                               float(cfg["field"]["cell_size_m"]),
+                               cfg.groups[gname].speed_range, log=log)
 
     if cfg["debug_video"].get("enabled"):
         from .debug_video import render_debug_video

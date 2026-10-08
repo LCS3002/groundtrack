@@ -351,6 +351,7 @@ separate lines for QGIS. `field_grid.csv` and `density.png` leave them out by de
 | `stats.json`, `stats.csv` | per class and group: tracks, flow per minute (as a time series and a mean), mean/median/85th-percentile speed, speed histogram, mean straightness, plus count-line crossings |
 | `houdini_import.py` | Python SOP script (§6) |
 | `topdown.png` | tracks over the dimmed GeoTIFF, coloured by speed blue → red, with a separate scale per group, scale bar and north arrow, 300 dpi |
+| `flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
 | `topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
 | `density.png` | occupancy heat map: object-seconds per m² |
 | `speed_histogram.png` | mean speed per track, same colours |

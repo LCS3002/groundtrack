@@ -127,6 +127,7 @@ DEFAULTS: dict[str, Any] = {
         "show_predicted": True,    # draw predicted (occlusion) segments dashed
         "topdown_video": True,     # topdown.mp4: movement animated over the map
         "topdown_video_speedup": 1.0,
+        "flowfield_video": True,   # flowfield.mp4: particles streaming through the vector field
     },
     "debug_video": {
         "enabled": False,

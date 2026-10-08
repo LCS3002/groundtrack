@@ -19,7 +19,7 @@ EXPECTED_FILES = ["raw_tracks.csv", "raw_tracks_meta.json", "points.csv", "track
                   "stats.csv", "houdini_import.py", "topdown.png", "density.png",
                   "speed_histogram.png", "config_used.yaml", "homography_used.json",
                   "run_log.txt", "debug.mp4", "vector_field.csv", "flow_field.png",
-                  "houdini_field.py", "topdown.mp4"]
+                  "houdini_field.py", "topdown.mp4", "flowfield.mp4"]
 
 
 @pytest.fixture(scope="module")
