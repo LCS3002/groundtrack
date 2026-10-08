@@ -210,8 +210,16 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
 
     reg = None
     if run_dir is not None and (Path(run_dir) / "registration.npz").exists():
-        reg, _, _ = load_registration(Path(run_dir) / "registration.npz")
+        reg, ref_frame, _ = load_registration(Path(run_dir) / "registration.npz")
     stable = reg is not None and bool(dv.get("stabilize_output", True))
+    ref_img = None
+    if stable:
+        from .video import read_frame
+
+        ref_img = read_frame(video, ref_frame)
+        if blur:  # the reference frame shows people too
+            for r in raw_all_people(run_dir, raw).query("frame == @ref_frame").itertuples():
+                blur_box(ref_img, r.x1, r.y1, r.x2, r.y2)
     clean = cfg["cleaning"]
     if clean.get("recover_occluded_feet", True):
         foot, _ = recover_feet(raw, int(float(clean.get("feet_window_s", 2.0)) * fps),
@@ -289,6 +297,12 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
             # output in calibration-frame pixels: the picture stops moving
             img = cv2.warpPerspective(img, H_f, (W, H), flags=cv2.INTER_LINEAR,
                                       borderMode=cv2.BORDER_CONSTANT)
+            # fill the edges the moved frame no longer covers with the (still) reference frame
+            cover = cv2.warpPerspective(np.full((H, W), 255, np.uint8), H_f, (W, H),
+                                        flags=cv2.INTER_NEAREST)
+            if ref_img is not None and cover.min() == 0:
+                hole = cover == 0
+                img[hole] = ref_img[hole]
             lay, a = canvas, alpha
             to_out = None
         elif H_f is not None:

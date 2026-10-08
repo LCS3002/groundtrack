@@ -100,7 +100,7 @@ def cmd_calibrate(args):
     run_calibration(video, cfg.path("geotiff"), out, frame=frame or 0, lens=lens,
                     points_csv=Path(args.points_csv) if args.points_csv else None,
                     interactive=not args.no_gui, ransac_thresh_m=args.ransac_m,
-                    warn_m=args.warn_m)
+                    warn_m=args.warn_m, camera_prior=cfg.get("camera_position"))
 
 
 def cmd_roi(args):

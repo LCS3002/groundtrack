@@ -15,6 +15,16 @@ import cv2
 import numpy as np
 
 WARN_RMSE_M = 0.5
+SPREAD_WARN = 0.3   # sqrt(smaller / larger extent) of the clicked map points
+
+
+def point_spread(world: np.ndarray) -> float:
+    """0 = all points on one line, 1 = spread equally in both directions."""
+    w = np.asarray(world, float).reshape(-1, 2)
+    if len(w) < 3:
+        return 0.0
+    ev = np.linalg.eigvalsh(np.cov((w - w.mean(axis=0)).T))
+    return float(np.sqrt(max(ev[0], 0) / max(ev[1], 1e-12)))
 
 
 @dataclass
@@ -81,6 +91,7 @@ class Homography:
             "max_error_m": self.max_error_m,
             "loo_rmse_m": self.loo_rmse_m,
             "camera_estimate": self.camera(),
+            "camera_params": getattr(self, "camera_params", None),
             "points": self.points,
         }
         Path(path).write_text(json.dumps(d, indent=2), encoding="utf-8")
@@ -88,7 +99,7 @@ class Homography:
     @classmethod
     def load(cls, path: str | Path) -> "Homography":
         d = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(
+        h_obj = cls(
             H=np.array(d["H_local"], float),
             origin=tuple(d["origin"]),
             image_size=tuple(d["image_size"]) if d.get("image_size") else None,
@@ -101,6 +112,9 @@ class Homography:
             w_sign=float(d.get("w_sign", 1.0)),
             reference_frame=int(d.get("reference_frame", 0)),
         )
+        if d.get("camera_params"):
+            h_obj.camera_params = d["camera_params"]
+        return h_obj
 
 
 def estimate_camera(H: np.ndarray, image_size, origin=(0.0, 0.0)) -> dict | None:
@@ -196,6 +210,9 @@ def fit_homography(px: np.ndarray, world: np.ndarray, ransac_thresh_m: float = 1
                    undistorted=undistorted, crs=crs, w_sign=w_sign)
     proj = h.to_world(px)
     err = np.linalg.norm(proj - world, axis=1)
+    # a point the fit puts behind the camera has no finite position: count it as a huge error
+    err = np.where(np.isfinite(err), err, np.inf)
+    h.spread = point_spread(world)
 
     # Leave-one-out error: refit without each inlier and measure the error at that point.
     # With only 6-8 points the in-sample residual flatters the fit; LOO is the honest number.
@@ -214,13 +231,15 @@ def fit_homography(px: np.ndarray, world: np.ndarray, ransac_thresh_m: float = 1
         {
             "id": i + 1, "u": float(px[i, 0]), "v": float(px[i, 1]),
             "E": float(world[i, 0]), "N": float(world[i, 1]),
-            "error_m": float(err[i]), "loo_error_m": None if np.isnan(loo[i]) else float(loo[i]),
+            "error_m": float(err[i]) if np.isfinite(err[i]) else None, "loo_error_m": None if np.isnan(loo[i]) else float(loo[i]),
             "inlier": bool(inlier[i]),
         }
         for i in range(n)
     ]
     h.rmse_m = float(np.sqrt(np.mean(err[inlier] ** 2)))
     h.max_error_m = float(err[inlier].max())
+    if not np.isfinite(h.rmse_m):
+        h.rmse_m = h.max_error_m = float("inf")
     h.loo_rmse_m = float(np.sqrt(np.nanmean(loo[idx] ** 2))) if np.isfinite(loo).any() else None
     return h
 
@@ -231,7 +250,8 @@ def report(h: Homography, warn_m: float = WARN_RMSE_M) -> str:
         loo = f"{p['loo_error_m']:9.3f}" if p.get("loo_error_m") is not None else "        -"
         lines.append(
             f"{p['id']:3d} {p['u']:8.1f} {p['v']:8.1f} {p['E']:12.2f} {p['N']:12.2f} "
-            f"{p['error_m']:9.3f} {loo} {'yes' if p['inlier'] else 'NO':>7}"
+            f"{(p['error_m'] if p['error_m'] is not None else float('inf')):9.3f} {loo} "
+            f"{'yes' if p['inlier'] else 'NO':>7}"
         )
     lines.append(f"RMSE (inliers): {h.rmse_m:.3f} m   max: {h.max_error_m:.3f} m"
                  + (f"   leave-one-out RMSE: {h.loo_rmse_m:.3f} m" if h.loo_rmse_m else ""))
@@ -245,6 +265,16 @@ def report(h: Homography, warn_m: float = WARN_RMSE_M) -> str:
     elif h.loo_rmse_m and h.loo_rmse_m > 2 * warn_m:
         lines.append(f"WARNING: leave-one-out RMSE {h.loo_rmse_m:.2f} m is high. The fit depends "
                      "heavily on individual points; add more well-spread points.")
+    behind = [p["id"] for p in h.points if p["error_m"] is None]
+    if behind:
+        lines.append(f"WARNING: points {behind} land behind the camera with this fit. The points "
+                     "do not pin down the ground plane: see the spread warning below, or "
+                     "re-check those clicks.")
+    sp = getattr(h, "spread", None)
+    if sp is not None and sp < SPREAD_WARN:
+        lines.append(f"WARNING: the points lie almost on one line (spread {sp:.2f}, want > "
+                     f"{SPREAD_WARN}). Add points well to the left and right of that line, near "
+                     "and far, or the projection away from it is guesswork.")
     if len(h.points) < 6:
         lines.append("NOTE: fewer than 6 points; 6-8 well-spread points are recommended.")
     cam = h.camera()

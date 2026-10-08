@@ -53,7 +53,7 @@ def _scroll_zoom(ax, event, base=1.4):
 
 
 def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_world=None,
-                warn_m: float = 0.5):
+                warn_m: float = 0.5, fit_fn=None, min_live: int = 5):
     """Open the two-pane picker. Returns (px, world) arrays, or None if cancelled."""
     import matplotlib.pyplot as plt
 
@@ -71,9 +71,15 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
     artists: list = []
 
     def redraw():
+        state["confirm"] = False  # any edit re-arms the "fewer than 6 pairs" check
         for a in artists:
             a.remove()
         artists.clear()
+        if len(px) > len(world) and state.get("guess"):
+            ge, gn = state["guess"]  # where the fit expects this point: just refine the click
+            artists.append(axm.plot(ge, gn, "o", mfc="none", mec="yellow", ms=24, mew=1.8)[0])
+        else:
+            state["guess"] = None
         for i, p in enumerate(px):
             artists.append(axv.plot(*p, "+", color="#ff2d55", ms=16, mew=1.6)[0])
             artists.append(axv.annotate(str(i + 1), p, xytext=(6, 6), textcoords="offset points",
@@ -88,9 +94,9 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
             status += f" | now click point {len(px)} on the MAP"
         else:
             status += f" | now click point {len(px) + 1} on the VIDEO"
-        if n >= 5:
+        if n >= min_live:
             try:
-                h = fit_homography(np.array(px[:n]), np.array(world[:n]))
+                h = fit_fn(np.array(px[:n]), np.array(world[:n]))
                 proj = h.to_world(np.array(px[:n]))
                 for (e, nn), (pe, pn) in zip(world[:n], proj):
                     if np.isfinite(pe):
@@ -98,11 +104,17 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
                         artists.append(axm.plot(pe, pn, "x", color="yellow", ms=8)[0])
                 flag = "  <-- TOO HIGH" if h.rmse_m > warn_m else ""
                 status += f" | RMSE {h.rmse_m:.2f} m{flag}"
-                worst = max(h.points, key=lambda p: p["error_m"])
-                status += f" | worst #{worst['id']} {worst['error_m']:.2f} m"
+                worst = max(h.points, key=lambda p: p["error_m"] if p["error_m"] is not None
+                            else float("inf"))
+                we = worst["error_m"]
+                status += f" | worst #{worst['id']} " + (f"{we:.2f} m" if we is not None
+                                                          else "behind camera")
+                if h.spread < 0.3:
+                    status += " | POINTS ALMOST IN A LINE: add some far left / right"
             except Exception as e:  # noqa: BLE001
                 status += f" | fit failed: {e}"
-        fig.suptitle(status + "\nleft-click add · right-click/u undo · scroll zoom · "
+        fig.suptitle(status + "\nleft-click add · right-click a point: delete pair · u undo · "
+                     "scroll zoom · "
                      "enter save · esc cancel", fontsize=11)
         fig.canvas.draw_idle()
 
@@ -111,15 +123,53 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
         if tb is not None and getattr(tb, "mode", ""):
             return  # zoom/pan tool active
         if ev.button == 3:
+            # right-click on an existing point deletes that pair; elsewhere undoes the last click
+            if ev.inaxes in (axv, axm) and ev.xdata is not None:
+                pts = px if ev.inaxes is axv else world
+                n = min(len(px), len(world))
+                if n:
+                    disp = ev.inaxes.transData.transform(np.asarray(pts[:n], float))
+                    d = np.hypot(disp[:, 0] - ev.x, disp[:, 1] - ev.y)
+                    k = int(np.argmin(d))
+                    if d[k] < 15:
+                        del px[k]
+                        del world[k]
+                        redraw()
+                        return
             undo()
             return
         if ev.button != 1 or ev.xdata is None:
             return
         if ev.inaxes is axv and len(px) == len(world):
             px.append([ev.xdata, ev.ydata])
+            _guide_map(ev.xdata, ev.ydata)
         elif ev.inaxes is axm and len(px) == len(world) + 1:
             world.append([ev.xdata, ev.ydata])
+            if state.get("map_view"):  # back to the overview after a guided click
+                axm.set_xlim(*state["map_view"][0])
+                axm.set_ylim(*state["map_view"][1])
+                state["map_view"] = None
         redraw()
+
+    def _guide_map(u, v):
+        """With >= 4 good pairs, zoom the map to where the video click should be."""
+        n = min(len(px), len(world))
+        if n < max(min_live - 1, 3):
+            return
+        try:
+            h = fit_fn(np.array(px[:n]), np.array(world[:n]))
+            if not np.isfinite(h.rmse_m) or h.rmse_m > 5:
+                return
+            e, nn = h.to_world(np.array([[u, v]]))[0]
+        except Exception:  # noqa: BLE001
+            return
+        if not np.isfinite(e):
+            return
+        state["map_view"] = (axm.get_xlim(), axm.get_ylim())
+        state["guess"] = (e, nn)
+        r = max(8.0, 4 * h.rmse_m + 6)
+        axm.set_xlim(e - r, e + r)
+        axm.set_ylim(nn - r, nn + r)
 
     def undo():
         if len(px) > len(world):
@@ -132,6 +182,14 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
         if ev.key in ("u", "backspace"):
             undo()
         elif ev.key == "enter":
+            n = min(len(px), len(world))
+            if n < 6 and not state.get("confirm"):
+                state["confirm"] = True
+                fig.suptitle(f"Only {n} pairs - at least 6 well-spread pairs are needed for a "
+                             "trustworthy fit.\nAdd more points, or press Enter again to save "
+                             "anyway.", fontsize=11, color="#d00")
+                fig.canvas.draw_idle()
+                return
             state["done"] = True
             plt.close(fig)
         elif ev.key == "escape":
@@ -205,7 +263,7 @@ def save_check_image(path, frame_bgr, h: Homography, raster: GeoRaster) -> None:
         if np.isfinite(pe):
             ax.plot([p["E"], pe], [p["N"], pn], "-", color="yellow", lw=1.5)
             ax.plot(pe, pn, "x", color="yellow", ms=9, mew=2)
-        ax.annotate(f"{p['id']}: {p['error_m']:.2f} m", (p["E"], p["N"]), xytext=(8, 8),
+        ax.annotate((f"{p['id']}: {p['error_m']:.2f} m" if p['error_m'] is not None else f"{p['id']}: behind camera"), (p["E"], p["N"]), xytext=(8, 8),
                     textcoords="offset points", color=c, fontsize=10, weight="bold")
     fig.suptitle(f"RMSE {h.rmse_m:.3f} m · max {h.max_error_m:.3f} m"
                  + (f" · leave-one-out RMSE {h.loo_rmse_m:.3f} m" if h.loo_rmse_m else ""))
@@ -217,8 +275,22 @@ def save_check_image(path, frame_bgr, h: Homography, raster: GeoRaster) -> None:
 def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
                     lens: Lens | None = None, points_csv: Path | None = None,
                     interactive: bool = True, ransac_thresh_m: float = 1.0,
-                    warn_m: float = 0.5, log=print) -> Homography:
+                    warn_m: float = 0.5, camera_prior: dict | None = None,
+                    log=print) -> Homography:
     frame_bgr = read_frame(video, frame)
+    size = (frame_bgr.shape[1], frame_bgr.shape[0])
+    if camera_prior:
+        from .posefit import camera_calibration
+
+        def fit_fn(a, b):
+            return camera_calibration(a, b, size, camera_prior)
+        min_live = 3
+        log(f"camera position known (E {camera_prior['E']}, N {camera_prior['N']}, "
+            f"{camera_prior['height_m']} m up): fitting a physical camera, 3+ pairs needed")
+    else:
+        def fit_fn(a, b):
+            return fit_homography(a, b, ransac_thresh_m=ransac_thresh_m)
+        min_live = 5
     if lens is not None:
         frame_bgr = lens.undistort_image(frame_bgr)
     raster = load_geotiff(geotiff, warn=log)
@@ -236,7 +308,7 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
         import matplotlib.pyplot as plt  # noqa: F401  (ensure an interactive backend loads)
 
         res = pick_points(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), raster, init_px,
-                          init_world, warn_m)
+                          init_world, warn_m, fit_fn=fit_fn, min_live=min_live)
         if res is None:
             raise SystemExit("Calibration cancelled; nothing saved.")
         px, world = res
@@ -245,15 +317,31 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
             raise ValueError("Non-interactive calibration needs --points-csv")
         px, world = init_px, init_world
 
-    h = fit_homography(px, world, ransac_thresh_m=ransac_thresh_m,
-                       image_size=(frame_bgr.shape[1], frame_bgr.shape[0]),
-                       undistorted=lens is not None, crs=f"EPSG:{raster.epsg}")
+    if camera_prior:
+        from .posefit import camera_calibration
+
+        h = camera_calibration(px, world, size, camera_prior)
+        h.undistorted, h.crs = lens is not None, f"EPSG:{raster.epsg}"
+    else:
+        h = fit_homography(px, world, ransac_thresh_m=ransac_thresh_m, image_size=size,
+                           undistorted=lens is not None, crs=f"EPSG:{raster.epsg}")
     h.reference_frame = int(frame)
     save_points_csv(default_csv, px, world)
     h.save(out_json)
     check_png = out_json.with_name(out_json.stem + "_check.png")
     save_check_image(check_png, frame_bgr, h, raster)
+    from .overlay_check import map_in_video
+
+    mp, ins = map_in_video(frame_bgr, h, raster)
+    blend = frame_bgr.copy()
+    blend[ins] = (0.5 * frame_bgr[ins] + 0.5 * mp[ins]).astype(np.uint8)
+    cv2.imwrite(str(out_json.with_name(out_json.stem + "_check_video.jpg")), blend)
     log(report(h, warn_m))
+    if getattr(h, "camera_params", None):
+        cp = h.camera_params
+        log(f"Fitted camera: direction {cp['yaw_deg']:.1f} deg, tilt {cp['tilt_deg']:.1f} deg, "
+            f"roll {cp['roll_deg']:.1f} deg, horizontal FOV {cp['hfov_deg']:.1f} deg, "
+            f"{cp['height_m']:.1f} m up at E {cp['E']:.1f}, N {cp['N']:.1f}")
     log(f"saved {out_json}\n      {default_csv}\n      {check_png}  <- open this and check "
         "that kerbs and markings line up")
     return h

@@ -270,6 +270,14 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
         if rec.any():
             log(f"  {int(rec.sum())} foot points rebuilt where the lower body was hidden")
     g = project_to_ground(raw, h, lens, registration, uv)
+    max_range = (cfg.get("projection") or {}).get("max_range_m")
+    cam = getattr(h, "camera_params", None) or h.camera()
+    if max_range and cam:
+        d = np.hypot(g["gx"] - cam["E"], g["gy"] - cam["N"])
+        far = d > float(max_range)
+        if far.any():
+            log(f"  {int(far.sum())} samples farther than {max_range} m from the camera dropped")
+        g = g[~far]
     n_above = len(raw) - len(g)
     if n_above:
         log(f"  {n_above} rows above the horizon / outside the ground plane dropped")

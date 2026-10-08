@@ -282,3 +282,27 @@ def test_unoccluded_track_untouched():
     raw = _box_track()
     uv, rec = recover_feet(raw, rows_per_window=60)
     assert not rec.any() and np.allclose(uv[:, 1], raw["y2"])
+
+
+def test_camera_calibration_with_known_position(cam, ground_points):
+    """3 clicks + the camera's position recover the full calibration; a bad click shows up."""
+    from groundtrack.posefit import camera_calibration
+
+    px = cam.ground_to_pixel(ground_points)
+    prior = {"E": cam.C[0] + 4, "N": cam.C[1] - 3, "height_m": 12.5, "position_tol_m": 10,
+             "height_tol_m": 3, "hfov_deg": 60}
+    # exact prior + 3 clicks: exact
+    exact = dict(prior, E=cam.C[0], N=cam.C[1], height_m=12.0)
+    h = camera_calibration(px[[0, 3, 6]], ground_points[[0, 3, 6]], (cam.width, cam.height), exact)
+    test = ground_points[[1, 2, 4, 5, 7]]
+    err = np.linalg.norm(h.to_world(cam.ground_to_pixel(test)) - test, axis=1)
+    assert err.max() < 0.05
+    # prior 5 m / 0.5 m off + 5 clicks: the clicks pull it back
+    h = camera_calibration(px[:5], ground_points[:5], (cam.width, cam.height), prior)
+    err = np.linalg.norm(h.to_world(cam.ground_to_pixel(ground_points[5:])) - ground_points[5:],
+                         axis=1)
+    assert err.max() < 0.5
+    bad = ground_points.copy()
+    bad[2] += [6.0, -4.0]
+    h2 = camera_calibration(px, bad, (cam.width, cam.height), prior)
+    assert not h2.points[2]["inlier"] and sum(p["inlier"] for p in h2.points) == 7

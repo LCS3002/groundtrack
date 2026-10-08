@@ -19,3 +19,5 @@ demo_site/
 # model weights (downloaded on demand)
 models/
 *.pt
+calibrate_all.py
+render_overlays.py

@@ -84,6 +84,12 @@ DEFAULTS: dict[str, Any] = {
             "vehicle_width_m": 1.8,         # used by offset_mode: view
         },
     },
+    "projection": {
+        # drop ground points farther than this from the camera (m). At shallow angles one
+        # pixel of foot jitter becomes metres far away; set it where the depth error per
+        # pixel gets too large (~0.2 m/px is a good limit). None = keep everything.
+        "max_range_m": None,
+    },
     "cleaning": {
         "min_track_s": 1.0,
         "max_gap_s": 2.0,         # gaps longer than this split a track instead of interpolating

@@ -83,7 +83,7 @@ pipeline. Look in `demo_site/runs/demo/demo/`.
   off; Android: turn off "video stabilisation"). Electronic stabilisation crops and shifts the
   frame over time, which breaks the calibration.
 * **Use the 1× (main) lens.** Don't zoom, and avoid the 0.5× ultra-wide: its distortion bends
-  straight kerbs (or use the lens calibration, §3.4). The phone must not switch lenses during a
+  straight kerbs (or use the lens calibration, §3.5). The phone must not switch lenses during a
   take. Lock focus and exposure (long-press on iPhone).
 * **Fixed frame rate.** Turn off "Auto FPS" / "Auto Low Light FPS". Variable frame rate makes
   speeds wrong. 1080p30 or 4K30 are both fine.
@@ -127,7 +127,38 @@ groundtrack init motorway --template motorway    # writes sites/motorway.yaml
 Copy the video to `footage/plaza.mp4` and the GeoTIFF to `maps/plaza.tif`, or edit the paths
 in the YAML. Paths are relative to the YAML file.
 
-### 3.3 Pick the points
+### 3.3 Tell it where you stood (strongly recommended)
+
+If you know roughly where the camera was, put it in the site config:
+
+```yaml
+camera_position:
+  E: 538231            # British National Grid; read it off QGIS or OpenStreetMap
+  N: 180557
+  height_m: 135        # above the ground you are calibrating (floor x ~3 m + eye height)
+  position_tol_m: 15   # how sure you are about E/N (e.g. half the building's footprint)
+  height_tol_m: 8
+  hfov_deg: 21         # optional starting guess for the zoom: 1x ~65-70, 2x ~35, 3x ~23, 5x ~14
+```
+
+Calibration then fits a **real camera** at that spot. Instead of a free homography (8 unknowns),
+it solves for direction, tilt, roll and zoom, plus a small position and height correction. In
+practice this changes a lot:
+
+* **3 good clicks are enough**, and the guided zoom starts after 2.
+* **Bad clicks stand out.** A rooftop or a mis-click can't be explained by any camera at that
+  spot, so it gets flagged and the fit is redone without it.
+* **No degenerate fits.** Points along one line, telephoto views from far away, and very low
+  viewpoints all stop being a problem.
+* **The report shows the fitted camera** (direction, tilt, field of view, height), so you can
+  sanity-check it against your memory of the zoom you used.
+
+On real footage, from a 43rd-floor window at about 3.5× zoom and from a 2–4 m eye height on a
+plaza, this was the difference between calibrations that would not converge and working ones.
+`calibrate` also writes `<name>_check_video.jpg`: the map projected into your video, which is
+the most readable check for oblique views.
+
+### 3.4 Pick the points
 
 ```powershell
 groundtrack calibrate --config sites/plaza.yaml            # first frame
@@ -173,7 +204,7 @@ Outputs go to `calibration/`:
 Non-interactive alternative: `groundtrack calibrate --config ... --points-csv my_points.csv --no-gui`
 with columns `u,v,E,N` (for example ground control points you already have).
 
-### 3.4 Optional: lens undistortion
+### 3.5 Optional: lens undistortion
 
 Only worth doing if straight kerbs look visibly bent near the frame edges. Print a checkerboard,
 and film or photograph it with the **same phone, lens and resolution** from 10–20 angles:
@@ -186,7 +217,7 @@ Set `lens: ../calibration/phone_1x_lens.json` in the site YAML, then **re-run `c
 picker then shows the undistorted frame. If the lens and homography don't match, the tool
 refuses to run.
 
-### 3.5 Optional: region of interest
+### 3.6 Optional: region of interest
 
 ```powershell
 groundtrack roi --config sites/motorway.yaml
@@ -197,7 +228,7 @@ road, the sky, reflections, and parked cars you don't want. Detections whose **f
 outside are ignored before tracking. The polygon is saved as `sites/<site>_roi.json` and
 picked up automatically. It is drawn on the calibration frame, so calibrate first.
 
-### 3.6 If the camera moved: `stabilize`
+### 3.7 If the camera moved: `stabilize`
 
 A homography is only valid for the frame you clicked on. If the phone moved during the clip
 (handheld, a railing that flexes, a slowly creeping tripod), set
@@ -316,6 +347,7 @@ separate lines for QGIS. `field_grid.csv` and `density.png` leave them out by de
 | `tracks.geojson` | one LineString per track (EPSG:27700) with the summary as attributes |
 | `predicted_gaps.geojson` | only the machine-made stretches |
 | `field_grid.csv` | world-aligned grid: `cell_x, cell_y, mean_vx, mean_vy, mean_speed, flow_speed, heading, coherence, count, n_tracks`. `count` = number of samples (your confidence); `coherence` is 1 when everyone moves the same way and 0 when flows cancel. `field_grid_<group>.csv` is written when there are several groups |
+| (flow) | for traffic, put a `count_lines` entry across the road: those crossings, by direction, are the flow. The per-group "tracks" number also counts fragments and side roads |
 | `stats.json`, `stats.csv` | per class and group: tracks, flow per minute (as a time series and a mean), mean/median/85th-percentile speed, speed histogram, mean straightness, plus count-line crossings |
 | `houdini_import.py` | Python SOP script (§6) |
 | `topdown.png` | tracks over the dimmed GeoTIFF, coloured by speed blue → red, with a separate scale per group, scale bar and north arrow, 300 dpi |
@@ -432,6 +464,12 @@ RMS. Real footage will be worse; that's what this check is for.
 
 ## 8. Accuracy notes and limitations
 
+* **Low viewpoints: limit the range.** Each pixel covers more ground the further away and the
+  flatter the view: roughly distance² ÷ (focal length × camera height). From 2–3 m eye height,
+  one pixel of foot jitter is about 0.1 m at 20 m but more than 0.5 m at 50 m. That inflates
+  speeds and breaks tracks. Set `projection: max_range_m` (for example 30–40 m on a plaza) to
+  only measure where the geometry is good. On a real plaza clip this brought the median walking
+  speed from an implausible 1.8 m/s down to 1.2 m/s, and cut impossible jumps by 90 %.
 * **Flat ground.** A homography maps one plane. Steps, ramps or a cambered road put objects off
   that plane, and they get projected as if they were on it. For a stepped plaza, calibrate on the
   main level and only use points on that level (or set the ROI to it).
@@ -464,7 +502,7 @@ RMS. Real footage will be worse; that's what this check is for.
 |---|---|
 | `groundtrack device` says cpu on the NVIDIA laptop | you installed the CPU wheel: `pip uninstall torch torchvision` and reinstall from the `cu128` index (§1); update the NVIDIA driver |
 | calibration RMSE > 0.5 m | spread the points out, use ground-contact features, zoom in before clicking, check the map really is EPSG:27700, film with **stabilisation off** and the **1× lens** |
-| check image lines up at the centre but not at the edges | lens distortion: use the 1× lens, or run `lens-calibrate` (§3.4) |
+| check image lines up at the centre but not at the edges | lens distortion: use the 1× lens, or run `lens-calibrate` (§3.5) |
 | speeds drift over a long recording | the camera moved (tripod knocked, window flexing); re-calibrate on a frame from that part |
 | ghost tracks over windows / glass | **avoid window reflections**: lens against the glass, dark cloth, room lights off; mask with an ROI |
 | many short broken tracks | increase `imgsz` or use a bigger model; raise `track_buffer_s`; check `stitch_radius_m`; set an ROI to cut the blurry far field |

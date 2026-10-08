@@ -19,11 +19,36 @@ import numpy as np
 
 WORK_WIDTH = 960      # features are matched on a downscaled grey frame
 MIN_INLIERS = 40
+FUSE_S = 0.5          # time constant: below it trust frame-to-frame flow, above it the reference
+
+
+def _box_mask(shape, boxes, scale, pad=0.15):
+    """255 everywhere except inside (padded) detection boxes: moving people are not scenery."""
+    m = np.full(shape, 255, np.uint8)
+    if boxes is None:
+        return m
+    for x1, y1, x2, y2 in np.asarray(boxes, float).reshape(-1, 4):
+        w, h = (x2 - x1) * pad, (y2 - y1) * pad
+        cv2.rectangle(m, (int((x1 - w) * scale), int((y1 - h) * scale)),
+                      (int((x2 + w) * scale), int((y2 + h) * scale)), 0, -1)
+    return m
 
 
 class FrameRegistrar:
+    """Per-frame camera-motion estimate, fused from two sources:
+
+    * absolute: ORB features matched against the reference frame. No drift, but each frame
+      is estimated on its own, so it jitters by a few pixels;
+    * relative: sparse optical flow from the previous frame. Very smooth and precise, but
+      drifts when chained over many frames.
+
+    `finalize()` combines them (complementary filter on the frame-corner trajectories): the
+    chained flow gives the fast motion, the reference matches correct the slow drift.
+    """
+
     def __init__(self, reference_bgr: np.ndarray, n_features: int = 3000):
         self.scale = min(1.0, WORK_WIDTH / reference_bgr.shape[1])
+        self.h, self.w = reference_bgr.shape[:2]
         self.orb = cv2.ORB_create(n_features, fastThreshold=10)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         g = self._gray(reference_bgr)
@@ -33,6 +58,12 @@ class FrameRegistrar:
         S = np.diag([self.scale, self.scale, 1.0])
         self._S, self._Sinv = S, np.linalg.inv(S)
         self.last = np.eye(3)
+        self.prev_gray = None
+        self.prev_mask = None
+        self.absolute: list[np.ndarray] = []
+        self.abs_ok: list[bool] = []
+        self.relative: list[np.ndarray | None] = []
+        self.inliers: list[int] = []
 
     def _gray(self, img):
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -40,27 +71,93 @@ class FrameRegistrar:
             g = cv2.resize(g, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
         return g
 
-    def register(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, int]:
-        """3x3 mapping pixels of this frame -> pixels of the reference frame, and #inliers.
-
-        On failure returns the last good homography with inliers = 0.
-        """
-        kp, des = self.orb.detectAndCompute(self._gray(frame_bgr), None)
+    def _absolute(self, g, mask):
+        kp, des = self.orb.detectAndCompute(g, mask)
         if des is None or len(kp) < MIN_INLIERS:
-            return self.last, 0
+            return None, 0
         pairs = self.matcher.knnMatch(des, self.ref_des, k=2)
         good = [m for m, *rest in pairs if rest and m.distance < 0.8 * rest[0].distance]
         if len(good) < MIN_INLIERS:
-            return self.last, 0
+            return None, 0
         src = np.float32([kp[m.queryIdx].pt for m in good])
         dst = np.float32([self.ref_kp[m.trainIdx].pt for m in good])
-        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 2.0, maxIters=3000)
-        n_in = int(mask.sum()) if mask is not None else 0
+        H, inl = cv2.findHomography(src, dst, cv2.RANSAC, 1.5, maxIters=3000)
+        n_in = int(inl.sum()) if inl is not None else 0
         if H is None or n_in < MIN_INLIERS:
-            return self.last, 0
-        H = self._Sinv @ H @ self._S          # back to full-resolution pixels
-        self.last = H / H[2, 2]
-        return self.last, n_in
+            return None, 0
+        H = self._Sinv @ H @ self._S
+        return H / H[2, 2], n_in
+
+    def _relative(self, g, mask):
+        """Homography mapping this frame -> previous frame, from sparse optical flow."""
+        if self.prev_gray is None:
+            return None
+        pts = cv2.goodFeaturesToTrack(self.prev_gray, 800, 0.01, 8, mask=self.prev_mask)
+        if pts is None or len(pts) < MIN_INLIERS:
+            return None
+        nxt, st, _ = cv2.calcOpticalFlowPyrLK(self.prev_gray, g, pts, None,
+                                              winSize=(21, 21), maxLevel=3)
+        ok = st.ravel() == 1
+        if ok.sum() < MIN_INLIERS:
+            return None
+        H, inl = cv2.findHomography(nxt[ok], pts[ok], cv2.RANSAC, 1.0, maxIters=2000)
+        if H is None or inl.sum() < MIN_INLIERS:
+            return None
+        H = self._Sinv @ H @ self._S
+        return H / H[2, 2]
+
+    def register(self, frame_bgr: np.ndarray, boxes=None) -> tuple[np.ndarray, int]:
+        """Record this frame's motion; returns (current frame -> reference estimate, inliers).
+
+        boxes: detections (x1, y1, x2, y2) in frame pixels, masked out of the matching.
+        """
+        g = self._gray(frame_bgr)
+        mask = _box_mask(g.shape, boxes, self.scale)
+        A, n_in = self._absolute(g, mask)
+        self.relative.append(self._relative(g, mask))
+        self.abs_ok.append(A is not None)
+        if A is None:
+            A = self.last
+        self.last = A
+        self.absolute.append(A)
+        self.inliers.append(n_in)
+        self.prev_gray, self.prev_mask = g, mask
+        return A, n_in
+
+    def finalize(self, fps: float) -> list[np.ndarray]:
+        """Fused, smooth frame -> reference homographies (see class docstring)."""
+        from scipy.ndimage import gaussian_filter1d
+
+        n = len(self.absolute)
+        if n == 0:
+            return []
+        c = np.float32([[0, 0], [self.w, 0], [self.w, self.h], [0, self.h]]).reshape(-1, 1, 2)
+
+        def corners(H):
+            return cv2.perspectiveTransform(c, H).reshape(-1)
+
+        P_abs = np.array([corners(A) for A in self.absolute])
+        chain = [self.absolute[0]]
+        for k in range(1, n):
+            R = self.relative[k]
+            if R is None:  # no flow: fall back to the step implied by the reference matches
+                R = np.linalg.inv(self.absolute[k - 1]) @ self.absolute[k]
+            chain.append(chain[-1] @ R)
+        P_chain = np.array([corners(C) for C in chain])
+        ok = np.array(self.abs_ok, bool)
+        diff = P_abs - P_chain
+        if (~ok).any() and ok.any():  # frames without a reference match: interpolate the drift
+            idx = np.arange(n)
+            for j in range(diff.shape[1]):
+                diff[~ok, j] = np.interp(idx[~ok], idx[ok], diff[ok, j])
+        drift = gaussian_filter1d(diff, sigma=max(1.0, FUSE_S * fps), axis=0, mode="nearest")
+        fused = P_chain + drift
+        out = []
+        for k in range(n):
+            H = cv2.getPerspectiveTransform(c.reshape(-1, 2), fused[k].reshape(-1, 2)
+                                            .astype(np.float32))
+            out.append(H / H[2, 2])
+        return out
 
 
 def save_registration(path: Path, frames, Hs, inliers, reference_frame: int) -> None:

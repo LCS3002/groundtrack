@@ -223,7 +223,7 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
         xyxy, conf, cls = b.xyxy, b.conf, b.cls.astype(int)
         H_ref = None
         if registrar is not None:
-            H_ref, n_in = registrar.register(frame)
+            H_ref, n_in = registrar.register(frame, xyxy)
             reg_frames.append(fidx)
             reg_H.append(H_ref)
             reg_inl.append(n_in)
@@ -285,6 +285,7 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
     if registrar is not None:
         from .registration import drift_px, save_registration
 
+        reg_H = registrar.finalize(info.fps / stride)  # smooth: flow + reference fusion
         save_registration(out_csv.with_name("registration.npz"), reg_frames, reg_H, reg_inl,
                           ref_frame)
         drift = [drift_px(H, info.width, info.height) for H in reg_H]

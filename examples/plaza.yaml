@@ -59,3 +59,13 @@ visuals:
 debug_video:
   enabled: false
   blur_people: true
+
+camera_position:            # where you stood (strongly recommended, see README 3.3)
+  E: 530000.0
+  N: 180000.0
+  height_m: 1.7             # eye height above the plaza level
+  position_tol_m: 5
+  height_tol_m: 1.0
+
+projection:
+  max_range_m: 35           # low viewpoint: only measure where positions are reliable

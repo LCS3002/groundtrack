@@ -58,3 +58,11 @@ visuals:
 debug_video:
   enabled: false
   blur_people: true
+
+camera_position:            # e.g. a window: building position + floor height
+  E: 530000.0
+  N: 180000.0
+  height_m: 60
+  position_tol_m: 15
+  height_tol_m: 6
+  hfov_deg: 65              # 1x ~65-70, 2x ~35, 3x ~23, 5x ~14

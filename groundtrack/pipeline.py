@@ -233,7 +233,7 @@ def _field_plots(cfg: Config, run_dir: Path, points: pd.DataFrame) -> dict:
 
 def _log_stats(stats: dict, log) -> None:
     for g, b in stats["per_group"].items():
-        log(f"  {g:9s} {b['n_tracks']:5d} tracks  {b['flow_per_min_mean']:7.2f}/min  mean "
+        log(f"  {g:9s} {b['n_tracks']:5d} tracks  mean "
             f"{b['mean_speed'] or 0:6.2f} m/s  median {b['median_speed'] or 0:6.2f} m/s  "
             f"straightness {b['mean_straightness'] or 0:.2f}")
     for cl in stats["count_lines"]:
