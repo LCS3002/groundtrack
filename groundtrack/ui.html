@@ -280,7 +280,16 @@ function renderSite() {
         `People check (latest run): detected people come out ${fmt(lastCheck.implied_person_height_m, 2)} m tall (${err > 0 ? "+" : ""}${fmt(err, 0)} % vs 1.70 m). `
         + (Math.abs(err) <= 10 ? "Calibration is consistent." : "Worth re-checking: more spread-out points, or the camera height.")));
     }
-    if (cal.auto_candidate) calKids.push(h("div", { class: "note" }, "An automatic calibration is saved next to yours (" + base(cal.auto_candidate) + "). Your clicked one is in use; compare the check images, and use the automatic one with: groundtrack autocalibrate -c " + s.config + " --replace"));
+    if (cal.auto_candidate) {
+      const scores = cal.auto_scores ? Object.entries(cal.auto_scores).map(([k, v]) => `${k}: ${fmt(v, 2)} m`).join("  ·  ") : "";
+      calKids.push(h("div", { class: "note" },
+        h("div", {}, "An automatic calibration is saved next to yours" + (cal.auto_method ? ` (${cal.auto_method})` : "") + ". Yours is still in use."),
+        scores ? h("div", { style: "margin-top: 6px; color: var(--grey)" }, "How far a hidden clicked point lands: " + scores) : null,
+        h("div", { style: "margin-top: 10px; display: flex; gap: 10px; align-items: center" },
+          h("button", { onclick: async () => { if (!confirm("Use the automatic calibration? Yours is kept as a backup (.before_auto.json). Re-process the runs afterwards.")) return;
+            try { await api("/api/adopt-auto", { config: s.config }); openSite(s.config, true); } catch (e) { alert(e.message); } } }, "Use the automatic calibration"),
+          cal.auto_check ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); lightbox(cal.auto_check); }, style: "font-size: 13px" }, "its check image") : null)));
+    }
     if (cal.checks?.length) calKids.push(h("div", { class: "thumbs" }, cal.checks.map(p => tile(p, base(p)))));
   } else calKids.push(h("div", { class: "note" }, "Not calibrated yet."));
   m.append(section("03", "Calibration", ...calKids,

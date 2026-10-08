@@ -71,6 +71,26 @@ def test_camera_position_written_into_config(project):
     assert text.count("camera_position:") == 1
 
 
+def test_adopt_automatic_calibration_keeps_a_backup(project):
+    import numpy as np
+
+    from groundtrack.homography import Homography
+
+    app = App(project)
+    cal = project / "calibration"
+    cal.mkdir()
+    mine = Homography(H=np.eye(3), origin=(0.0, 0.0), image_size=(10, 10))
+    auto = Homography(H=np.diag([2.0, 2.0, 1.0]), origin=(0.0, 0.0), image_size=(10, 10))
+    mine.save(cal / "plaza9_homography.json")
+    auto.save(cal / "plaza9_homography_auto.json")
+    assert "auto_candidate" in app.site("sites/plaza9.yaml")["calibration"]
+    app.adopt_auto({"config": "sites/plaza9.yaml"})
+    assert Homography.load(cal / "plaza9_homography.json").H[0, 0] == 2.0
+    assert Homography.load(cal / "plaza9_homography.before_auto.json").H[0, 0] == 1.0
+    assert not (cal / "plaza9_homography_auto.json").exists()
+    assert "auto_candidate" not in app.site("sites/plaza9.yaml")["calibration"]
+
+
 def test_write_camera_position_keeps_following_keys(tmp_path):
     p = tmp_path / "s.yaml"
     p.write_text("site: a\ncamera_position:\n  E: 1\n  N: 2\nprojection:\n  max_range_m: 30\n")

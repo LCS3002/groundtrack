@@ -206,6 +206,16 @@ class App:
                 auto = hp.with_name(hp.stem + "_auto.json")
                 if auto.exists():
                     cal["auto_candidate"] = str(auto)
+                    try:
+                        ha = Homography.load(auto)
+                        cal["auto_method"] = getattr(ha, "method", "")
+                        info = getattr(ha, "method_info", None) or {}
+                        cal["auto_scores"] = info.get("leave_one_out_median_m")
+                    except Exception:
+                        pass
+                    ac = auto.with_name(auto.stem + "_check_video.jpg")
+                    if ac.exists():
+                        cal["auto_check"] = str(ac)
             except Exception as e:
                 cal["error"] = str(e)
             checks = []
@@ -323,6 +333,26 @@ class App:
         job = Job(kind, args, self.root, label)
         self.jobs[job.id] = job
         return job.summary()
+
+    def adopt_auto(self, body: dict) -> dict:
+        """Use <name>_auto.json as the calibration; the current one is kept as a backup."""
+        import shutil
+
+        cfg = _load(self.resolve_config(body.get("config", "")))
+        hp = cfg.path("homography")
+        auto = hp.with_name(hp.stem + "_auto.json")
+        if not auto.exists():
+            raise ValueError("no automatic calibration to use")
+        if hp.exists():
+            shutil.copy2(hp, hp.with_name(hp.stem + ".before_auto.json"))
+        for suffix in ("_check_video.jpg",):
+            old, new = hp.with_name(hp.stem + suffix), auto.with_name(auto.stem + suffix)
+            if old.exists():
+                shutil.copy2(old, old.with_name(hp.stem + ".before_auto" + suffix))
+            if new.exists():
+                shutil.move(str(new), str(old))
+        shutil.move(str(auto), str(hp))
+        return {"ok": True, "backup": str(hp.with_name(hp.stem + ".before_auto.json"))}
 
     def set_camera(self, body: dict) -> dict:
         from .locate import write_camera_position
@@ -513,6 +543,8 @@ def make_handler(app: App, port: int):
                     from .locate import search
 
                     self._json({"hits": search(str(body.get("query", ""))[:200])})
+                elif route == "/api/adopt-auto":
+                    self._json(app.adopt_auto(body))
                 elif route == "/api/camera":
                     self._json(app.set_camera(body))
                 elif route == "/api/paths":
