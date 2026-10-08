@@ -189,7 +189,12 @@ It tries, in this order:
    vehicles drive on roads, along them, at believable speeds, with car-sized footprints. The
    car size sets the scale; without it, a long lens can squeeze every track onto one patch
    of road. If you already clicked points, they are used too.
-3. Then it **checks** the result against the footage: people's height, and the share of
+3. **Walking people** (a plaza, no traffic). People are about 1.70 m tall and walk about
+   1.3 m/s, and nobody walks through buildings or the dock (OpenStreetMap outlines). That
+   fixes the tilt, the camera height and the zoom. On an open plaza nothing in the footage
+   tells which way the camera faces, so **2 clicked points** finish it: open the picker,
+   click 2 pairs, press Enter twice (it saves them), then run `autocalibrate`.
+4. Then it **checks** the result against the footage: people's height, and the share of
    vehicles on mapped roads.
 
 A calibration you clicked is never overwritten: the automatic one is saved next to it as
@@ -207,8 +212,24 @@ field of view within 2°. On the ground, measured against the clicked map points
 | vehicles on roads, no clicks | 9.8 m (5–13 m on four clips, 33 m on one) |
 
 So: without clicks it's good for flows, directions and vector fields, and as a check on a
-hand calibration; for metre-level positions, add 3–4 clicks and it uses both. For people-only
-clips (a plaza) there is no automatic method yet besides "same spot": pick 3–4 points.
+hand calibration; for metre-level positions, add 3–4 clicks and it uses both.
+
+On the plaza (eye height, people only), walking people + **any 2 clicks** were tested
+against the clicks they did not see:
+
+| plaza3 | median error on unseen clicked points |
+|---|---|
+| clicked points, all but one (the old way, 6 clicks) | 0.41 m |
+| walking people + 2 clicks (every possible pair) | 0.56 m (worst pair 3.3 m: two clicks close together) |
+| walking people + clicks 2 and 5, through `autocalibrate` | 0.28 m |
+
+Spread the two clicks out (one near, one far, on different sides) and two are enough, **from
+a raised spot**. From eye height it did not work: on the two clips filmed at 1.8 m (dock edge),
+people + 2 clicks was 5–7 m off (worst pair 27 m), because everyone's head sits on the horizon
+and that says almost nothing about the tilt. Those clips' own clicks are also weaker (1.7 and
+2.9 m leave-one-out). `autocalibrate` therefore refuses the 2-click shortcut below 2.5 m camera
+height and asks for 5+ points. **Filming tip: stand on steps, a wall or a first-floor window;**
+3–4 m of height makes both clicking and the automatic methods much more reliable.
 
 ### 3.5 Pick the points
 
@@ -353,7 +374,8 @@ Defaults that matter, with suggested values per site:
 | setting | plaza | motorway | why |
 |---|---|---|---|
 | `detection.model` | `yolo26m.pt` | `yolo26m.pt` | `l`/`x` find more small, far objects but run slower |
-| `detection.imgsz` | 1280 (1600–1920 for 4K) | 1280 | larger = smaller objects found |
+| `detection.imgsz` | 1920 | 1920 | larger = smaller objects found. Measured on a plaza clip: 1920 found 34 % more people than 1280 (17 % more tracks) at the same speed |
+| `detection.conf` | 0.25 | 0.2 | measured on a high-rise clip: 0.2 found 21 % more vehicles than 0.3, with longer tracks; BoT-SORT vs ByteTrack and longer `track_buffer_s` made no clear difference |
 | `detection.tracker` | `botsort` | `bytetrack` | both work; BoT-SORT is a little steadier in crowds |
 | `detection.track_buffer_s` | 1.5 | 1.0 | how long a lost object is predicted before it's dropped |
 | `groups.*.speed_range` | people 0–2.5 m/s | vehicles 0–35 m/s | colour ramp limits |

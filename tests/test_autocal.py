@@ -122,3 +122,67 @@ def test_vehicles_on_roads_recover_the_camera(yaw, pitch, f):
     assert abs(c["tilt_deg"] - pitch) < 3, c
     assert abs(c["hfov_deg"] / true_fov - 1) < 0.15, c
     assert info["on_road_share"] > 0.9
+
+
+def _people_scene(cam, fps=25.0, n_people=40, seed=5):
+    """People (1.7 m +- 7 cm, walking ~1.3 m/s) in front of an eye-level camera, as raw tracks."""
+    rng = np.random.default_rng(seed)
+    fwd = np.array([math.sin(math.radians(cam.yaw)), math.cos(math.radians(cam.yaw))])
+    side = np.array([fwd[1], -fwd[0]])
+    rows = []
+    for tid in range(1, n_people + 1):
+        start = cam.C[:2] + fwd * rng.uniform(6, 25) + side * rng.uniform(-8, 8)
+        ang = rng.uniform(0, 2 * math.pi)
+        vel = rng.normal(1.3, 0.12) * np.array([math.cos(ang), math.sin(ang)])
+        height = rng.normal(1.70, 0.07)
+        for f in range(0, 100, 2):
+            g = start + vel * f / fps
+            foot = cam.ground_to_pixel(g[None])[0]
+            top = cam.project(np.array([[g[0], g[1], height]]))[0]
+            half = 0.25 * (foot[1] - top[1]) / height        # ~0.5 m wide
+            x1, x2, y1, y2 = foot[0] - half, foot[0] + half, top[1], foot[1]
+            if not np.isfinite([x1, x2, y1, y2]).all() or x1 < 0 or x2 > cam.width or \
+                    y1 < 3 or y2 > cam.height or y2 - y1 < 45:
+                continue
+            rows.append((tid, "person", 0, f, f / fps, x1, y1, x2, y2, 0.9, False))
+    return pd.DataFrame(rows, columns=["track_id", "class", "class_id", "frame", "time_s", "x1",
+                                       "y1", "x2", "y2", "confidence", "predicted"])
+
+
+def test_plaza_people_plus_two_clicks():
+    """Eye-level camera: the people fix tilt, height and zoom; 2 clicks fix the direction."""
+    from groundtrack.autocal import fit_to_people
+
+    cam = SyntheticCamera(width=1280, height=720, f=1000.0, height_m=2.2, pitch_deg=4.0,
+                          yaw_deg=30.0, cam_local=(0.0, 0.0))
+    raw = _people_scene(cam)
+    fwd = np.array([math.sin(math.radians(30)), math.cos(math.radians(30))])
+    side = np.array([fwd[1], -fwd[0]])
+    pts = np.array([cam.C[:2] + fwd * 12 + side * 4, cam.C[:2] + fwd * 20 - side * 5])
+    clicks = (cam.ground_to_pixel(pts), pts)
+    prior = {"E": ORIGIN[0] + 2.0, "N": ORIGIN[1] - 1.5, "height_m": 1.8,
+             "position_tol_m": 6.0, "height_tol_m": 1.5}
+    h, info = fit_to_people(raw, (1280, 720), prior, [], log=lambda *_: None, clicks=clicks,
+                            radius_m=100)
+    assert h is not None, info
+    check = np.array([cam.C[:2] + fwd * d + side * s for d in (8, 15, 25) for s in (-6, 0, 6)])
+    err = np.linalg.norm(h.to_world(cam.ground_to_pixel(check)) - check, axis=1)
+    assert np.median(err) < 0.5, (err, info["camera"])
+    assert abs(info["camera"]["height_m"] - 2.2) < 0.4
+
+
+def test_picker_with_two_points_defers_to_autocalibrate(tmp_path):
+    """With a camera position, fewer than 3 clicks are saved for `autocalibrate`."""
+    from groundtrack.calibrate import load_points_csv, run_calibration, save_points_csv
+    from groundtrack.demo import make_demo_site
+
+    site = make_demo_site(tmp_path)
+    px, world = load_points_csv(site["points_csv"])
+    two = tmp_path / "two.csv"
+    save_points_csv(two, px[:2], world[:2])
+    out = tmp_path / "cal" / "x_homography.json"
+    res = run_calibration(site["video"], site["geotiff"], out, points_csv=two, interactive=False,
+                          camera_prior={"E": world[0][0], "N": world[0][1] - 30, "height_m": 10},
+                          log=lambda *_: None)
+    assert res is None and not out.exists()
+    assert len(load_points_csv(out.with_name("x_homography_points.csv"))[0]) == 2

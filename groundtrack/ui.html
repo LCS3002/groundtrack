@@ -289,7 +289,7 @@ function renderSite() {
       cTime,
       h("button", { disabled: !(v.ok && s.map.ok), onclick: () => startJob("autocalibrate", { replace: !cal.ok }) }, "Calibrate automatically"),
       h("button", { disabled: !v.ok, onclick: () => startJob("roi") }, "Draw region of interest")),
-    h("div", { class: "hint" }, "Pick points: opens the point picker in its own window (click a spot in the video, then the same spot on the map; Enter to finish). Calibrate automatically: inherits the calibration of a clip filmed from the same spot, or fits the camera so the tracked vehicles drive on the OpenStreetMap roads (needs the camera position; ~10 m, use clicks for better). An existing calibration is kept: the automatic one is saved next to it. The ROI limits detection to the area you draw.")));
+    h("div", { class: "hint" }, "Pick points: opens the point picker in its own window (click a spot in the video, then the same spot on the map; Enter to finish). Calibrate automatically: inherits the calibration of a clip filmed from the same spot, or fits the camera so the tracked vehicles drive on the OpenStreetMap roads (needs the camera position; ~10 m, use clicks for better). On a plaza the walking people set tilt, height and zoom: click just 2 well-spread points (Enter twice to save them), then calibrate automatically. An existing calibration is kept: the automatic one is saved next to it. The ROI limits detection to the area you draw.")));
 
   // 04 run
   const rn = h("input", { placeholder: "run name (optional)", style: "width: 200px" });

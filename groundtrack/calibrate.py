@@ -317,6 +317,14 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
             raise ValueError("Non-interactive calibration needs --points-csv")
         px, world = init_px, init_world
 
+    if camera_prior and len(px) < 3:
+        # too few for a camera on its own: the people / vehicles in the footage finish it
+        save_points_csv(default_csv, px, world)
+        log(f"{len(px)} point pair(s) saved to {default_csv}. With the camera position known, "
+            "the walking people or the traffic can supply the rest:\n  groundtrack "
+            "autocalibrate --config <this site>.yaml")
+        return None
+
     if camera_prior:
         from .posefit import camera_calibration
 

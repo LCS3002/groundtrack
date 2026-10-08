@@ -8,6 +8,9 @@
    The camera (direction, tilt, roll, zoom) is solved so that the tracked vehicles land on
    the OpenStreetMap road lines. No clicks and no image matching, so old aerials, blur and
    haze don't matter.
+3. People (`fit_to_people`): walking people are ~1.70 m tall and walk ~1.3 m/s, and don't
+   walk through buildings or water. That fixes tilt, camera height and zoom; on an open
+   plaza nothing fixes the direction, so 2 clicked points finish it.
 
 Both return a Homography like the point picker does, and `quality_checks` tests any
 calibration against what the footage itself says (people ~1.7 m, vehicles on roads,
@@ -29,6 +32,8 @@ import pandas as pd
 from .homography import Homography, fit_homography
 
 USER_AGENT = "groundtrack (architecture research tool)"
+PERSON_M = 1.70      # typical adult height
+WALK_M_S = 1.3       # typical free walking speed
 OVERPASS = "https://overpass-api.de/api/interpreter"
 
 
@@ -507,6 +512,301 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
     return h, info
 
 
+# --------------------------------------------------------------------------- 3. people
+def osm_obstacles(E: float, N: float, radius_m: float = 400.0, timeout: float = 60.0,
+                  cache: Path | None = None) -> list[np.ndarray]:
+    """Where nobody walks: building footprints and water (docks, rivers) from OpenStreetMap,
+    as closed (n, 2) EPSG:27700 rings. Only the search box is sent."""
+    from rasterio.warp import transform
+
+    if cache is not None and cache.exists():
+        return [np.asarray(r, float) for r in json.loads(cache.read_text(encoding="utf-8"))]
+    lon, lat = transform("EPSG:27700", "EPSG:4326",
+                         [E - radius_m, E + radius_m], [N - radius_m, N + radius_m])
+    bbox = f"{lat[0]:.6f},{lon[0]:.6f},{lat[1]:.6f},{lon[1]:.6f}"
+    q = (f'[out:json][timeout:50];(way["building"]({bbox});relation["building"]({bbox});'
+         f'way["natural"="water"]({bbox});relation["natural"="water"]({bbox});'
+         f'way["waterway"~"^(dock|riverbank)$"]({bbox}););out geom;')
+    req = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": q}).encode(),
+                                 headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    rings = []
+    for el in data.get("elements", []):
+        geoms = [el.get("geometry")] if el.get("type") == "way" else \
+            [m.get("geometry") for m in el.get("members", []) if m.get("role") == "outer"]
+        for g in geoms:
+            if not g or len(g) < 4:
+                continue
+            xs, ys = transform("EPSG:4326", "EPSG:27700", [p["lon"] for p in g],
+                               [p["lat"] for p in g])
+            rings.append(np.column_stack([xs, ys]))
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps([r.round(2).tolist() for r in rings]), encoding="utf-8")
+    return rings
+
+
+class ObstacleDepth:
+    """How far (m) a ground point lies inside a building or water (0 = walkable)."""
+
+    def __init__(self, rings: list[np.ndarray], E: float, N: float, radius_m: float,
+                 res: float = 0.5):
+        from scipy.ndimage import distance_transform_edt
+
+        self.x0, self.y1, self.res = E - radius_m, N + radius_m, res
+        n = int(2 * radius_m / res) + 1
+        self.n = n
+        inside = np.zeros((n, n), np.uint8)
+        for r in rings:
+            pts = np.round(np.column_stack([(r[:, 0] - self.x0) / res,
+                                            (self.y1 - r[:, 1]) / res])).astype(np.int32)
+            cv2.fillPoly(inside, [pts.reshape(-1, 1, 2)], 1)
+        self.d = distance_transform_edt(inside) * res
+
+    def __call__(self, xy: np.ndarray) -> np.ndarray:
+        from scipy.ndimage import map_coordinates
+
+        c = (xy[:, 0] - self.x0) / self.res
+        r = (self.y1 - xy[:, 1]) / self.res
+        out = map_coordinates(self.d, [r, c], order=1, mode="nearest")
+        far = (c < 0) | (r < 0) | (c > self.n - 1) | (r > self.n - 1)
+        return np.where(far | ~np.isfinite(out), 0.0, out)
+
+
+def people_samples(raw: pd.DataFrame, registration: dict | None = None, min_box_px: float = 40,
+                   max_tracks: int = 300, per_track: int = 10, seed: int = 0):
+    """Feet, head tops, track ids and times of clearly visible walking people."""
+    from .registration import apply_registration
+    from .trajectories import recover_feet
+
+    r = raw.copy()
+    r["predicted"] = r["predicted"].astype(str).str.lower().isin(["true", "1"])
+    feet, squished = recover_feet(r, 60)
+    keep = ((r["class"] == "person") & ~r["predicted"] & ~squished
+            & ((r["y2"] - r["y1"]) >= min_box_px) & (r["y1"] > 2)).to_numpy()
+    r = r[keep].copy()
+    foot = feet[keep]
+    top = np.column_stack([(r["x1"] + r["x2"]) / 2, r["y1"]]).astype(float)
+    if registration:
+        fr = r["frame"].to_numpy()
+        foot = apply_registration(fr, foot, registration)
+        top = apply_registration(fr, top, registration)
+    r["fu"], r["fv"], r["tu"], r["tv"] = foot[:, 0], foot[:, 1], top[:, 0], top[:, 1]
+    span = r.groupby("track_id").agg(du=("fu", lambda s: s.max() - s.min()),
+                                     dv=("fv", lambda s: s.max() - s.min()), n=("fu", "size"))
+    moving = span[(np.hypot(span["du"], span["dv"]) > 30) & (span["n"] >= 8)].index.to_numpy()
+    rng = np.random.default_rng(seed)
+    if len(moving) > max_tracks:
+        moving = rng.choice(moving, max_tracks, replace=False)
+    F, T, IDS, TS = [], [], [], []
+    for tid in moving:
+        t = r[r["track_id"] == tid].sort_values("frame")
+        k = np.linspace(0, len(t) - 1, min(per_track, len(t))).round().astype(int)
+        F.append(t[["fu", "fv"]].to_numpy(float)[k])
+        T.append(t[["tu", "tv"]].to_numpy(float)[k])
+        IDS.append(np.full(len(k), tid))
+        TS.append(t["time_s"].to_numpy(float)[k])
+    if not F:
+        return np.zeros((0, 2)), np.zeros((0, 2)), np.zeros(0, int), np.zeros(0)
+    return np.vstack(F), np.vstack(T), np.concatenate(IDS), np.concatenate(TS)
+
+
+class PeopleObjective:
+    """How well a camera explains the walking people.
+
+      obstacles  nobody stands inside a building or in the dock
+      height     people come out ~1.70 m tall (per track, robust)
+      speed      people walk at ~1.3 m/s (median over tracks; 1.2-1.4 is typical)
+    The height fixes tilt and camera height, the speed the zoom/scale, the obstacles the
+    direction. Parameters as RoadObjective.
+    """
+
+    def __init__(self, samples, obstacles: ObstacleDepth, E, N, size, person_m=PERSON_M,
+                 walk_m_s=WALK_M_S):
+        self.foot, self.top, ids, ts = samples
+        self.obst, self.E, self.N = obstacles, E, N
+        self.w, self.h = size
+        same = ids[1:] == ids[:-1]
+        self.i0 = np.nonzero(same)[0]
+        self.i1 = self.i0 + 1
+        self.dts = np.maximum(ts[self.i1] - ts[self.i0], 1e-3)
+        self.tracks, self.t_pair = np.unique(ids[self.i0], return_inverse=True)
+        self.all_tracks, self.t_all = np.unique(ids, return_inverse=True)
+        self.person_m, self.walk = person_m, walk_m_s
+        n = max(len(self.foot), 1)
+        # population constraints (robust to children, lingering, occlusions): the median
+        # person is ~1.70 m (+-3 %), the median walker ~1.3 m/s (+-12 %, the weaker cue)
+        self.w_height = math.sqrt(n) / 0.03
+        self.w_track = 0.5 * math.sqrt(n / max(len(self.all_tracks), 1))
+        self.w_speed = math.sqrt(n) / 0.12
+
+    def camera(self, p):
+        from .demo import SyntheticCamera
+
+        yaw, pitch, roll, logf, dE, dN, height = p
+        return SyntheticCamera(width=self.w, height=self.h, f=math.exp(logf), height_m=height,
+                               pitch_deg=pitch, yaw_deg=yaw, roll_deg=roll, cam_local=(dE, dN),
+                               origin=np.array([self.E, self.N]))
+
+    def residuals(self, p, robust: float = 1.0) -> np.ndarray:
+        cam = self.camera(p)
+        P = cam.K @ np.column_stack([cam.R, -cam.R @ cam.C])
+        G = P[:, [0, 1, 3]]
+        fh = np.column_stack([self.foot, np.ones(len(self.foot))]) @ np.linalg.inv(G).T
+        with np.errstate(divide="ignore", invalid="ignore"):
+            g = fh[:, :2] / fh[:, 2:3]
+        # a ground hit only counts in front of the camera
+        fwd = cam.R[2]
+        ahead = (g - cam.C[:2]) @ fwd[:2] > 0
+        ok = np.isfinite(g).all(axis=1) & ahead
+        g = np.where(ok[:, None], g, np.nan)
+        # obstacles
+        dep = np.where(ok, self.obst(np.nan_to_num(g, nan=1e9)), 5.0)
+        r_obst = 2.0 * np.sqrt(2 * robust * (np.sqrt(1 + (dep / robust) ** 2) - 1))
+        # height (z such that the point z m above the foot projects onto the head row)
+        X = np.column_stack([np.nan_to_num(g, nan=0.0), np.zeros(len(g)), np.ones(len(g))])
+        a, c = X @ P[1], X @ P[2]
+        b, d = P[1, 2], P[2, 2]
+        v = self.top[:, 1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = (a - v * c) / (v * d - b)
+        lz = np.log(np.clip(np.where(ok & (z > 0), z, np.nan), 0.3, 6.0) / self.person_m)
+        n_all = len(self.all_tracks)
+        use = np.isfinite(lz)
+        cnt = np.bincount(self.t_all, use.astype(float), n_all)
+        tr = np.bincount(self.t_all, np.where(use, lz, 0.0), n_all) / np.maximum(cnt, 1)
+        tr = np.where(cnt > 0, tr, 0.5)
+        med_h = float(np.median(tr[cnt > 0])) if (cnt > 0).any() else 0.5
+        r_height = np.concatenate([[self.w_height * med_h],          # the median person
+                                   self.w_track * np.sqrt(2 * 0.1 * (np.sqrt(1 + (tr / 0.1) ** 2)
+                                                                    - 1))])
+        # speed: the median walking speed of the tracks
+        step = np.linalg.norm(g[self.i1] - g[self.i0], axis=1) / self.dts
+        k = len(self.tracks)
+        good = np.isfinite(step)
+        vs = np.exp(np.bincount(self.t_pair, np.where(good, np.log(np.maximum(step, 1e-3)), 0), k)
+                    / np.maximum(np.bincount(self.t_pair, good.astype(float), k), 1))
+        med = float(np.median(vs)) if len(vs) else self.walk
+        r_speed = np.array([self.w_speed * math.log(max(med, 1e-3) / self.walk)])
+        return np.concatenate([r_obst, r_height, r_speed])
+
+    def parts(self, p) -> dict:
+        r = self.residuals(p)
+        cut = np.cumsum([len(self.foot), len(self.all_tracks) + 1])
+        return {nm: round(float(np.sum(seg ** 2)), 1)
+                for nm, seg in zip(("obstacles", "height", "speed"), np.split(r, cut))}
+
+
+def fit_to_people(raw: pd.DataFrame, size, prior: dict, obstacles: list[np.ndarray],
+                  registration: dict | None = None, log=print, radius_m: float = 400.0,
+                  clicks=None, click_px: float = 4.0, extra_starts: list[dict] | None = None):
+    """Camera from the known position + walking people. Returns (Homography|None, info)."""
+    from scipy.optimize import least_squares
+
+    from .posefit import _project, pose_homography
+
+    S = people_samples(raw, registration)
+    n_tracks = int(len(set(S[2])))
+    info = {"method": "people on walkable ground", "people_tracks": n_tracks}
+    if n_tracks < 12:
+        info["reason"] = f"only {n_tracks} clearly visible walking people (need 12+)"
+        return None, info
+    E, N, Hc = float(prior["E"]), float(prior["N"]), float(prior["height_m"])
+    pos_tol = float(prior.get("position_tol_m", 10.0))
+    h_tol = float(prior.get("height_tol_m", max(0.5, 0.2 * Hc)))
+    obst = ObstacleDepth(obstacles, E, N, radius_m)
+    w, hh = size
+    full = PeopleObjective(S, obst, E, N, size)
+    small = PeopleObjective(people_samples(raw, registration, max_tracks=60, per_track=5, seed=1),
+                            obst, E, N, size)
+    lo = [-1e9, -15.0, -12, math.log(150), -pos_tol, -pos_tol, max(0.3, Hc - h_tol)]
+    hi = [1e9, 60.0, 12, math.log(20000), pos_tol, pos_tol, Hc + h_tol]
+    sig_pos, sig_h = max(pos_tol / 2, 0.1), max(h_tol / 2, 0.1)
+    if clicks is not None:
+        c_px, c_world = (np.asarray(a, float).reshape(-1, 2) for a in clicks)
+        w_click = math.sqrt(len(full.foot) / max(len(c_px), 1)) / click_px
+
+    f_prior = (math.log(w / 2 / math.tan(math.radians(float(prior["hfov_deg"]) / 2)))
+               if prior.get("hfov_deg") else None)
+    w_f = math.sqrt(len(full.foot)) / 0.05            # lens known to ~5 %
+
+    def refine(x0, obj=full, nfev=300):
+        def r(p):
+            out = [obj.residuals(p),
+                   3.0 * np.array([p[4] / sig_pos, p[5] / sig_pos, (p[6] - Hc) / sig_h])]
+            if f_prior is not None:
+                out.append(np.array([w_f * (p[3] - f_prior)]))
+            if clicks is not None:
+                out.append(w_click * (_project(p, c_world, size, np.array([E, N])) - c_px).ravel())
+            return np.concatenate(out)
+        return least_squares(r, np.clip(np.asarray(x0, float), lo, hi), bounds=(lo, hi),
+                             max_nfev=nfev, diff_step=1e-3)
+
+    # coarse search: every direction, tilt and zoom (phone lenses: ~15-110 deg)
+    fovs = list(np.geomspace(15, 110, 14))
+    if prior.get("hfov_deg"):
+        fovs.append(float(prior["hfov_deg"]))
+    cands = []
+    for fov in fovs:
+        logf = math.log(w / 2 / math.tan(math.radians(fov / 2)))
+        vfov = 2 * math.degrees(math.atan(hh / 2 / math.exp(logf)))
+        for pitch in np.arange(-5.0, 35.0, float(np.clip(vfov / 4, 1.0, 4.0))):
+            for yaw in np.arange(0.0, 360.0, float(np.clip(fov / 4, 2.0, 8.0))):
+                p = (float(yaw), float(pitch), 0.0, logf, 0.0, 0.0, Hc)
+                cands.append((float(np.mean(small.residuals(p) ** 2)), p, fov))
+    cands.sort(key=lambda c: c[0])
+
+    def distinct(x, others, tol=1.0):
+        return not any(abs((x[0] - q[0] + 180) % 360 - 180) < 4 * tol and abs(x[1] - q[1]) < 3 * tol
+                       and abs(x[3] - q[3]) < 0.1 * tol for q in others)
+
+    sols = []
+    for cam in extra_starts or []:
+        x0 = [cam["yaw_deg"], cam["tilt_deg"], cam.get("roll_deg", 0.0),
+              math.log(cam["focal_px"]), cam["E"] - E, cam["N"] - N, cam["height_m"]]
+        info.setdefault("extra_starts", []).append(full.parts(np.clip(x0, lo, hi)))
+        sols.append(refine(x0))
+    picked, quick = [], []
+    for c, p, fov in cands:
+        if not distinct(p, [q for q, _ in picked], tol=max(fov / 8, 1.0)):
+            continue
+        picked.append((p, fov))
+        quick.append(refine(p, small, nfev=60))
+        if len(picked) >= 40:
+            break
+    quick.sort(key=lambda s_: s_.cost)
+    done = []
+    for q in quick:
+        if distinct(q.x, done):
+            done.append(q.x)
+            sols.append(refine(q.x))
+        if len(done) >= 8:
+            break
+    sols.sort(key=lambda s_: s_.cost)
+    p = sols[0].x
+    params = {"yaw_deg": float(p[0] % 360), "tilt_deg": float(p[1]), "roll_deg": float(p[2]),
+              "focal_px": float(math.exp(p[3])), "E": E + float(p[4]), "N": N + float(p[5]),
+              "height_m": float(p[6]),
+              "hfov_deg": float(math.degrees(2 * math.atan(w / 2 / math.exp(p[3]))))}
+    h = pose_homography(params["E"], params["N"], params["height_m"], params["yaw_deg"],
+                        params["tilt_deg"], params["focal_px"], size, roll=params["roll_deg"],
+                        origin=np.round([E, N]))
+    h.camera_params = params
+    h.points = []
+    h.spread = 1.0
+    parts = full.parts(p)
+    g = h.to_world(S[0])
+    inside = float(np.mean(obst(np.nan_to_num(g, nan=1e9)) > 0.5))
+    h.rmse_m = h.max_error_m = float("nan")
+    info.update(cost_parts=parts, inside_obstacles_share=round(inside, 3),
+                camera={k: round(v, 3) for k, v in params.items()})
+    log(f"  people: {n_tracks} walking people, {inside:.0%} of foot points inside buildings or "
+        f"water, looking {params['yaw_deg']:.0f}°, tilt {params['tilt_deg']:.1f}°, field of view "
+        f"{params['hfov_deg']:.1f}°, {params['height_m']:.1f} m up")
+    return h, info
+
+
 # --------------------------------------------------------------------------- 4. checks
 def quality_checks(h: Homography, raw: pd.DataFrame, cfg, registration: dict | None = None,
                    ways: list[np.ndarray] | None = None, people: bool = True) -> dict:
@@ -546,6 +846,11 @@ def _latest_run(cfg) -> Path | None:
     root = (cfg.path("output_dir") or cfg.base_dir / "runs") / cfg.site
     runs = sorted((p for p in root.glob("*") if Run(p).is_run()), key=lambda p: p.stat().st_mtime)
     return runs[-1] if runs else None
+
+
+def _obstacle_cache(out: Path, prior: dict) -> Path:
+    return out.parent / (f"osm_obstacles_{round(prior['E'], -2):.0f}_"
+                         f"{round(prior['N'], -2):.0f}.json")
 
 
 def _road_cache(out: Path, prior: dict) -> Path:
@@ -628,20 +933,54 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
             if h is None:
                 frame_idx = ref                      # the tracks are aligned to that frame
     n_veh = 0 if raw is None else int(raw["class"].isin(["car", "bus", "truck"]).sum())
+    n_ppl = 0 if raw is None else int((raw["class"] == "person").sum())
+    pts_csv = out.with_name(out.stem + "_points.csv")
 
     # 2. vehicles on roads -------------------------------------------------------------
     if h is None:
         if not prior:
             report["reason"] = ('needs the camera position first: groundtrack locate '
                                 '"<building>" --floor N -c <site>.yaml --write')
+        elif n_veh < 100 and n_ppl >= 300 and float(prior["height_m"]) < 2.5:
+            # tested: from eye height everyone's head sits on the horizon, which says almost
+            # nothing about the tilt; the people cues then made the fit worse on one of two clips
+            report["reason"] = ("camera at eye height: the walking people can't fix the tilt "
+                                "from down there. Pick 5+ well-spread points (groundtrack "
+                                "calibrate), or film from a raised spot (steps, a wall, a "
+                                "first-floor window) next time")
+        elif n_veh < 100 and n_ppl >= 300:
+            # 3. walking people: height and speed fix tilt, camera height and zoom; on an open
+            # plaza only buildings / water could fix the direction, so 2 clicks do that
+            from .calibrate import load_points_csv
+
+            clicks = load_points_csv(pts_csv) if pts_csv.exists() else None
+            rings = osm_obstacles(prior["E"], prior["N"], cache=_obstacle_cache(out, prior))
+            starts = []
+            if out.exists() and getattr(Homography.load(out), "camera_params", None):
+                starts.append(Homography.load(out).camera_params)
+            hp, info = fit_to_people(raw, size, prior, rings, reg, log=log, clicks=clicks,
+                                     extra_starts=starts)
+            report["tried"].append(info)
+            if hp is not None and clicks is not None and len(clicks[0]) >= 2:
+                h = hp
+                h.method = f"walking people + {len(clicks[0])} clicked points"
+                h.method_info = {k: v for k, v in info.items() if k != "extra_starts"}
+            elif hp is not None:
+                c = info["camera"]
+                report["reason"] = (
+                    f"the walking people give tilt {c['tilt_deg']:.1f}°, field of view "
+                    f"{c['hfov_deg']:.0f}° and camera height {c['height_m']:.1f} m, but on an "
+                    "open plaza nothing in the footage fixes the direction: click 2 points "
+                    "(groundtrack calibrate, then Enter twice) and run autocalibrate again")
+            else:
+                report["reason"] = info.get("reason", "not enough people")
         elif n_veh < 100:
-            report["reason"] = ("no moving vehicles to fit to roads: for people-only clips, "
+            report["reason"] = ("not enough moving vehicles or walking people in the tracks: "
                                 "pick 3-4 points (groundtrack calibrate)")
         else:
             from .calibrate import load_points_csv
 
             ways = osm_roads(prior["E"], prior["N"], cache=_road_cache(out, prior))
-            pts_csv = out.with_name(out.stem + "_points.csv")
             clicks = load_points_csv(pts_csv) if pts_csv.exists() else None
             starts = []
             if out.exists() and getattr(Homography.load(out), "camera_params", None):

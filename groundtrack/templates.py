@@ -17,7 +17,8 @@ fps: null                                 # set only if the video reports a wron
 PLAZA = COMMON_HEAD + """
 detection:
   model: yolo26m.pt         # yolo26n/s/m/l/x: bigger = better on small far people, slower
-  imgsz: 1280               # raise to 1600-1920 for distant people in 4K footage
+  imgsz: 1920               # phone video's long side: on a plaza clip 1920 found 34 % more
+                            # people than 1280 at the same speed (smaller, farther people)
   conf: 0.25
   tracker: botsort          # bytetrack | botsort | path/to/custom.yaml
   track_buffer_s: 1.5       # people get occluded by each other for longer than cars
@@ -72,8 +73,9 @@ debug_video:
 MOTORWAY = COMMON_HEAD + """
 detection:
   model: yolo26m.pt
-  imgsz: 1280
-  conf: 0.3
+  imgsz: 1920               # cars are small from a high-rise: use the full width
+  conf: 0.2                 # 0.2 found 21 % more vehicles than 0.3 on a high-rise clip, with
+                            # longer tracks; cleaning removes the occasional false box
   tracker: bytetrack
   track_buffer_s: 1.0
   vid_stride: 1
