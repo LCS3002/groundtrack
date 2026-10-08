@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>groundtrack</title>
+<style>
+:root {
+  --bg: #0b0b0c; --panel: #111113; --ink: #ecece8; --grey: #8a8a8e; --dim: #5c5c60;
+  --hair: #2a2a2e; --accent: #26b6da; --warn: #ffa840; --bad: #ff6b5e; --ok: #7fd8b0;
+  --font: "Bahnschrift", "DIN Alternate", "DIN Next", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font);
+  font-weight: 300; font-size: 15px; -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+.cap { font-size: 11px; letter-spacing: .3em; text-transform: uppercase; color: var(--grey);
+  font-weight: 400; }
+header { display: flex; align-items: baseline; gap: 28px; padding: 26px 40px 20px;
+  border-bottom: 1px solid var(--hair); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+header .brand { letter-spacing: .32em; font-size: 13px; font-weight: 400; }
+header .root { color: var(--dim); font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+#jobsBar { display: flex; gap: 14px; font-size: 12px; color: var(--grey); }
+#jobsBar .job { cursor: pointer; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dim);
+  margin-right: 7px; vertical-align: 1px; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); } .dot.run { background: var(--accent); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.layout { display: grid; grid-template-columns: 250px 1fr; min-height: calc(100vh - 70px); }
+aside { border-right: 1px solid var(--hair); padding: 28px 0; }
+aside .cap { padding: 0 28px 14px; display: block; }
+.site { padding: 11px 28px; cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; border-left: 2px solid transparent; }
+.site:hover { background: var(--panel); }
+.site.active { border-left-color: var(--accent); background: var(--panel); }
+.site .n { font-size: 15px; }
+.site .s { font-size: 11px; color: var(--dim); letter-spacing: .08em; }
+main { padding: 34px 48px 80px; max-width: 1500px; }
+h1 { font-weight: 300; font-size: 54px; letter-spacing: .05em; margin: 0 0 6px; text-transform: uppercase; }
+.sub { color: var(--grey); font-size: 15px; margin-bottom: 30px; }
+section { margin: 0 0 46px; }
+section > .head { display: flex; align-items: baseline; gap: 18px; border-bottom: 1px solid var(--hair);
+  padding-bottom: 10px; margin-bottom: 18px; }
+section > .head .num { color: var(--dim); font-size: 11px; letter-spacing: .3em; }
+.row { display: flex; flex-wrap: wrap; gap: 34px; align-items: flex-start; }
+.fig .cap { display: block; margin-bottom: 6px; }
+.fig .v { font-size: 26px; }
+.fig .u { color: var(--grey); font-size: 14px; margin-left: 4px; }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 7px 18px; font-size: 14px; }
+.kv .k { color: var(--grey); }
+.path { font-family: var(--mono); font-size: 12px; color: var(--grey); word-break: break-all; }
+button, .btn { background: transparent; color: var(--ink); border: 1px solid #47474c; padding: 9px 16px;
+  font-family: var(--font); font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+  cursor: pointer; font-weight: 400; text-decoration: none; display: inline-block; }
+button:hover, .btn:hover { border-color: var(--accent); color: #fff; }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.primary:hover { background: var(--accent); color: var(--bg); }
+button:disabled { opacity: .35; cursor: default; }
+input, select { background: var(--panel); color: var(--ink); border: 1px solid var(--hair);
+  padding: 9px 11px; font-family: var(--font); font-size: 14px; font-weight: 300; outline: none; }
+input:focus, select:focus { border-color: var(--accent); }
+input[type=checkbox] { accent-color: var(--accent); }
+label.l { display: block; }
+label.l .cap { display: block; margin-bottom: 6px; }
+.hint { color: var(--dim); font-size: 12px; margin-top: 8px; line-height: 1.5; }
+.note { font-size: 13px; padding: 10px 14px; border-left: 2px solid var(--warn); background: #17130c;
+  color: #e9d6bb; margin: 12px 0; }
+.note.ok { border-color: var(--ok); background: #0d1612; color: #c7eadb; }
+.hits div { padding: 8px 12px; border: 1px solid var(--hair); margin-top: -1px; cursor: pointer; font-size: 13px; }
+.hits div:hover, .hits div.sel { border-color: var(--accent); }
+.hits .c { color: var(--dim); font-size: 12px; }
+pre.log { background: #070708; border: 1px solid var(--hair); font-family: var(--mono); font-size: 12px;
+  color: #b9b9bd; padding: 14px 16px; height: 300px; overflow: auto; margin: 14px 0 0; white-space: pre-wrap; }
+.progress { font-family: var(--mono); font-size: 12px; color: var(--accent); min-height: 18px; margin-top: 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+.tile { cursor: pointer; }
+.tile .img { background: #050506 center/contain no-repeat; aspect-ratio: 4 / 3; border: 1px solid var(--hair); }
+.tile.label .img { background-color: #3a3a3e; }
+.tile .t { font-size: 12px; color: var(--grey); margin-top: 7px; letter-spacing: .05em;
+  display: flex; justify-content: space-between; }
+.tile .t a { color: var(--dim); text-decoration: none; }
+.tile .t a:hover { color: var(--accent); }
+video { width: 100%; background: #000; border: 1px solid var(--hair); }
+.videos { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 18px; }
+.runs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.runs .r { padding: 7px 12px; border: 1px solid var(--hair); cursor: pointer; font-size: 13px; }
+.runs .r.sel { border-color: var(--accent); }
+.runs .r .s { color: var(--dim); font-size: 11px; margin-left: 6px; }
+.files a { display: inline-block; margin: 0 14px 8px 0; font-size: 13px; color: var(--grey); text-decoration: none;
+  border-bottom: 1px solid var(--hair); }
+.files a:hover { color: var(--accent); }
+.lightbox { position: fixed; inset: 0; background: rgba(5,5,6,.94); display: none; align-items: center;
+  justify-content: center; z-index: 20; cursor: zoom-out; }
+.lightbox img { max-width: 94vw; max-height: 90vh; }
+.lightbox .t { position: absolute; bottom: 22px; left: 0; right: 0; text-align: center; color: var(--grey); font-size: 12px; letter-spacing: .1em; }
+dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--hair); padding: 30px 34px; width: min(560px, 92vw); }
+dialog::backdrop { background: rgba(0,0,0,.7); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.empty { color: var(--dim); padding: 60px 0; font-size: 15px; }
+.err { color: var(--bad); font-size: 13px; margin-top: 10px; }
+.thumbs { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.thumbs .tile { width: 300px; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--hair); }
+  main { padding: 24px 18px; } header { padding: 18px; } h1 { font-size: 36px; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">GROUNDTRACK</span>
+  <span class="root" id="root"></span>
+  <span id="jobsBar"></span>
+</header>
+<div class="layout">
+  <aside>
+    <span class="cap">Sites</span>
+    <div id="sites"></div>
+    <div style="padding: 18px 28px"><button onclick="newSiteDlg.showModal()">+ New site</button></div>
+  </aside>
+  <main id="main"><div class="empty">Pick a site on the left, or create a new one.</div></main>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.style.display='none'"><img id="lbImg" alt=""><div class="t" id="lbT"></div></div>
+
+<dialog id="newSiteDlg">
+  <div class="cap" style="margin-bottom: 20px">New site</div>
+  <div class="grid2">
+    <label class="l"><span class="cap">Name</span><input id="nsName" placeholder="plaza4"></label>
+    <label class="l"><span class="cap">Type</span><select id="nsTpl"><option value="plaza">people (plaza)</option><option value="motorway">vehicles (road)</option></select></label>
+  </div>
+  <label class="l" style="margin-top: 16px"><span class="cap">Video file</span><input id="nsVideo" style="width: 100%" placeholder="C:/…/clip.mov  (paste the full path)"></label>
+  <label class="l" style="margin-top: 16px"><span class="cap">GeoTIFF (EPSG:27700)</span><input id="nsMap" style="width: 100%" placeholder="C:/…/map.tif"></label>
+  <div class="hint">Tip: in Explorer, Shift + right-click a file → "Copy as path", then paste.</div>
+  <div class="err" id="nsErr"></div>
+  <div style="margin-top: 22px; display: flex; gap: 10px">
+    <button class="primary" onclick="createSite()">Create</button>
+    <button onclick="newSiteDlg.close()">Cancel</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const state = { sites: [], current: null, site: null, run: null, jobs: {}, watch: null, since: 0 };
+
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "style") el.setAttribute("style", v);
+    else if (v !== undefined && v !== null && v !== false) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false)
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return el;
+}
+async function api(path, body) {
+  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json", "X-Groundtrack": "1" },
+                       body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opt);
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+const fileUrl = (p, w) => "/file?path=" + encodeURIComponent(p) + (w ? "&w=" + w : "");
+const base = p => p.split(/[\\/]/).pop();
+const fmt = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(d);
+function section(num, title, ...kids) {
+  return h("section", {}, h("div", { class: "head" }, h("span", { class: "num" }, num), h("span", { class: "cap" }, title)), ...kids);
+}
+function fig(label, value, unit) {
+  return h("div", { class: "fig" }, h("span", { class: "cap" }, label), h("span", { class: "v" }, value), unit ? h("span", { class: "u" }, unit) : null);
+}
+
+// ------------------------------------------------------------------ sites
+async function loadSites() {
+  const j = await api("/api/sites");
+  state.sites = j.sites; $("#root").textContent = j.root;
+  for (const job of j.jobs) state.jobs[job.id] = job;
+  renderJobs();
+  const list = $("#sites"); list.innerHTML = "";
+  for (const s of j.sites) {
+    const ready = s.video_ok && s.map_ok && s.calibrated;
+    const status = s.error ? "bad" : ready ? "ok" : "warn";
+    const sub = s.error ? "config error" : !s.video_ok ? "video missing" : !s.map_ok ? "map missing"
+      : !s.calibrated ? "not calibrated" : `${s.runs} run${s.runs === 1 ? "" : "s"}`;
+    list.append(h("div", { class: "site" + (state.current === s.config ? " active" : ""), onclick: () => openSite(s.config) },
+      h("div", {}, h("div", { class: "n" }, s.name), h("div", { class: "s" }, sub)), h("span", { class: "dot " + status })));
+  }
+}
+
+async function openSite(config, keepRun) {
+  state.current = config;
+  if (!keepRun) state.run = null;
+  [...document.querySelectorAll(".site")].forEach((el, i) => el.classList.toggle("active", state.sites[i]?.config === config));
+  try { state.site = await api("/api/site?config=" + encodeURIComponent(config)); }
+  catch (e) { $("#main").replaceChildren(h("div", { class: "err" }, e.message)); return; }
+  if (!state.run && state.site.runs.length) state.run = state.site.runs.find(r => r.processed)?.name || state.site.runs[0].name;
+  renderSite();
+}
+
+function renderSite() {
+  const s = state.site, v = s.video, cal = s.calibration, cam = s.camera_position;
+  const m = $("#main"); m.innerHTML = "";
+  const parts = [];
+  if (v.width) parts.push(`${v.width} × ${v.height}`, `${fmt(v.fps, 2)} fps`, `${fmt(v.duration_s, 1)} s`);
+  m.append(h("h1", {}, s.name), h("div", { class: "sub" }, parts.join("  ·  ") || "no video yet"));
+
+  // 01 source
+  const vIn = h("input", { style: "width: 100%", value: v.path || "", placeholder: "full path to the video" });
+  const mIn = h("input", { style: "width: 100%", value: s.map.path || "", placeholder: "full path to the GeoTIFF" });
+  m.append(section("01", "Source",
+    h("div", { class: "kv" },
+      h("span", { class: "k" }, h("span", { class: "dot " + (v.ok ? "ok" : "bad") }), "Video"), vIn,
+      h("span", { class: "k" }, h("span", { class: "dot " + (s.map.ok ? "ok" : "bad") }), "Map"), mIn,
+      h("span", { class: "k" }, "Config"), h("span", { class: "path" }, s.config_path)),
+    h("div", { style: "margin-top: 14px; display: flex; gap: 10px" },
+      h("button", { onclick: async () => { await api("/api/paths", { config: s.config, video: vIn.value, geotiff: mIn.value }); await loadSites(); openSite(s.config, true); } }, "Save paths"),
+      h("button", { onclick: () => api("/api/open", { path: s.config_path }) }, "Open folder"))));
+
+  // 02 camera
+  const q = h("input", { placeholder: "e.g. Urbanest Canary Wharf", style: "width: 340px" });
+  const floor = h("input", { type: "number", placeholder: "floor", style: "width: 90px" });
+  const height = h("input", { type: "number", placeholder: "or height m", style: "width: 120px", step: "0.1" });
+  const hits = h("div", { class: "hits", style: "margin-top: 12px; max-width: 760px" });
+  const camMsg = h("div");
+  let chosen = null;
+  async function search() {
+    hits.replaceChildren(h("div", { class: "c" }, "searching OpenStreetMap …"));
+    try {
+      const r = await api("/api/locate", { query: q.value });
+      hits.innerHTML = "";
+      if (!r.hits.length) hits.append(h("div", { class: "c" }, "nothing found"));
+      r.hits.forEach((x, i) => {
+        const el = h("div", { onclick: () => { chosen = x; [...hits.children].forEach(c => c.classList.remove("sel")); el.classList.add("sel"); } },
+          x.name, h("div", { class: "c" }, `E ${fmt(x.E)}  N ${fmt(x.N)}  ·  ~${fmt(x.size_m, 0)} m across`));
+        if (i === 0) { chosen = x; el.classList.add("sel"); }
+        hits.append(el);
+      });
+    } catch (e) { hits.replaceChildren(h("div", { class: "err" }, e.message)); }
+  }
+  async function useCamera() {
+    if (!chosen) { camMsg.replaceChildren(h("div", { class: "err" }, "search and pick a place first")); return; }
+    const hm = height.value ? Number(height.value) : (Number(floor.value || 0) * 3.1 + 1.5);
+    const body = { config: s.config, E: chosen.E, N: chosen.N, height_m: hm,
+      position_tol_m: Math.max(5, chosen.size_m / 2), height_tol_m: Math.max(1, 0.06 * hm), note: "OSM: " + chosen.name.slice(0, 60) };
+    try { await api("/api/camera", body); openSite(s.config, true); }
+    catch (e) { camMsg.replaceChildren(h("div", { class: "err" }, e.message)); }
+  }
+  q.addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+  m.append(section("02", "Where the camera stood",
+    cam ? h("div", { class: "row", style: "margin-bottom: 18px" },
+      fig("Easting", fmt(cam.E)), fig("Northing", fmt(cam.N)), fig("Height", fmt(cam.height_m), "m"),
+      fig("Tolerance", "± " + fmt(cam.position_tol_m, 0), "m"), cam.hfov_deg ? fig("Field of view", fmt(cam.hfov_deg, 0), "°") : null)
+      : h("div", { class: "note" }, "Not set. With the camera position known, 3–4 clicked points are enough and long lenses / low views calibrate reliably."),
+    h("div", { style: "display: flex; gap: 10px; flex-wrap: wrap" }, q, h("button", { onclick: search }, "Search"), floor, height,
+      h("button", { class: "primary", onclick: useCamera }, cam ? "Replace" : "Use")),
+    hits, camMsg,
+    h("div", { class: "hint" }, "Only the search text is sent to OpenStreetMap. Height = floor × 3.1 m + 1.5 m eye height, or type the height directly. Fine-tune by hand in the config if you know better.")));
+
+  // 03 calibration
+  const cTime = h("input", { type: "number", placeholder: "frame at s", style: "width: 120px", step: "0.1" });
+  const calKids = [];
+  if (cal.ok) {
+    const c = cal.camera;
+    calKids.push(h("div", { class: "row" },
+      fig("Error (RMSE)", fmt(cal.rmse_m, 2), "m"), fig("Point pairs", cal.n_points ?? "—"),
+      c ? fig("Camera height", fmt(c.height_m, 0), "m") : null, c ? fig("Field of view", fmt(c.hfov_deg, 0), "°") : null,
+      fig("ROI", s.roi ? "yes" : "whole frame")));
+    const lastCheck = s.runs.find(r => r.check)?.check;
+    if (lastCheck) {
+      const err = lastCheck.scale_error_pct;
+      calKids.push(h("div", { class: "note" + (Math.abs(err) <= 10 ? " ok" : "") },
+        `People check (latest run): detected people come out ${fmt(lastCheck.implied_person_height_m, 2)} m tall (${err > 0 ? "+" : ""}${fmt(err, 0)} % vs 1.70 m). `
+        + (Math.abs(err) <= 10 ? "Calibration is consistent." : "Worth re-checking: more spread-out points, or the camera height.")));
+    }
+    if (cal.checks?.length) calKids.push(h("div", { class: "thumbs" }, cal.checks.map(p => tile(p, base(p)))));
+  } else calKids.push(h("div", { class: "note" }, "Not calibrated yet."));
+  m.append(section("03", "Calibration", ...calKids,
+    h("div", { style: "margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap" },
+      h("button", { class: cal.ok ? "" : "primary", disabled: !(v.ok && s.map.ok), onclick: () => startJob("calibrate", { time: cTime.value }) }, cal.ok ? "Re-calibrate" : "Pick points"),
+      cTime,
+      h("button", { disabled: !v.ok, onclick: () => startJob("roi") }, "Draw region of interest")),
+    h("div", { class: "hint" }, "Opens the point picker in its own window: click a spot in the video, then the same spot on the map. Enter to finish. The ROI limits detection to the area you draw.")));
+
+  // 04 run
+  const rn = h("input", { placeholder: "run name (optional)", style: "width: 200px" });
+  const mf = h("input", { type: "number", placeholder: "test: frames", style: "width: 130px" });
+  const dv = h("input", { type: "checkbox", id: "dv" });
+  m.append(section("04", "Run",
+    h("div", { style: "display: flex; gap: 12px; align-items: center; flex-wrap: wrap" },
+      h("button", { class: "primary", disabled: !(v.ok && cal.ok), onclick: () => startJob("run", { run_name: rn.value, max_frames: mf.value, debug_video: dv.checked }) }, "Start run"),
+      rn, mf, h("label", { for: "dv", style: "font-size: 13px; color: var(--grey)" }, dv, " overlay video (people blurred)")),
+    h("div", { class: "hint" }, "Detect + track, then tracks, vector fields, maps, videos and the package (frameless images, labels, metrics). A test with ~300 frames takes a minute."),
+    h("div", { id: "jobView" })));
+  renderJobView();
+
+  // 05 results
+  const res = h("div");
+  m.append(section("05", "Results", res));
+  renderRuns(res);
+}
+
+function tile(p, title, cls = "", dl = true) {
+  return h("div", { class: "tile " + cls },
+    h("div", { class: "img", style: `background-image: url('${fileUrl(p, 480)}')`, onclick: () => lightbox(p) }),
+    h("div", { class: "t" }, h("span", {}, title), dl ? h("a", { href: fileUrl(p) + "&download=1", title: "download" }, "↓") : null));
+}
+function lightbox(p) { $("#lbImg").src = fileUrl(p); $("#lbT").textContent = base(p); $("#lightbox").style.display = "flex"; }
+
+async function renderRuns(box) {
+  const s = state.site;
+  box.innerHTML = "";
+  if (!s.runs.length) { box.append(h("div", { class: "empty", style: "padding: 10px 0" }, "No runs yet.")); return; }
+  box.append(h("div", { class: "runs" }, s.runs.map(r => h("div", { class: "r" + (r.name === state.run ? " sel" : ""),
+    onclick: () => { state.run = r.name; renderRuns(box); } }, r.name, h("span", { class: "s" }, r.processed ? `${r.n_tracks ?? "?"} tracks` : "tracked only")))));
+  const det = h("div"); box.append(det);
+  let d;
+  try { d = await api(`/api/run?config=${encodeURIComponent(s.config)}&run=${encodeURIComponent(state.run)}`); }
+  catch (e) { det.append(h("div", { class: "err" }, e.message)); return; }
+  const actions = h("div", { style: "display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 26px" },
+    h("button", { onclick: () => startJob("process", {}, state.run) }, "Re-process"),
+    h("button", { onclick: () => startJob("package", {}, state.run) }, "Rebuild package"),
+    h("button", { onclick: () => startJob("debug-video", {}, state.run) }, "Overlay video"),
+    h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder"),
+    d.images.length ? h("button", { onclick: () => api("/api/open", { path: d.path + "/package" }) }, "Open package") : null);
+  det.append(actions);
+  if (d.metrics) {
+    const want = ["tracks", "median_speed", "median_speed_kmh", "median_straightness", "duration", "calibration_rmse", "implied_person_height"];
+    const rows = d.metrics.filter(r => want.includes(r.metric) || r.metric.startsWith("flow_"));
+    det.append(h("div", { class: "row", style: "margin-bottom: 30px" }, rows.map(r => fig(r.label, r.value, ["count", "0..1"].includes(r.unit) ? "" : r.unit))));
+  }
+  if (!d.images.length && !d.maps.length) det.append(h("div", { class: "note" }, "Not processed yet: Re-process builds the outputs from the tracked data."));
+  if (d.images.length) {
+    det.append(h("div", { class: "cap", style: "margin: 6px 0 12px" }, "Images  —  frameless"));
+    det.append(h("div", { class: "gallery" }, d.images.map(p => tile(p, base(p).replace(".png", "")))));
+  }
+  if (d.layers.length) {
+    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Layers  —  transparent"));
+    det.append(h("div", { class: "gallery" }, d.layers.map(p => tile(p, base(p).replace(".png", ""), "label"))));
+  }
+  if (d.labels.length || d.label_data.length) {
+    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Labels  —  legends, scale, north, metrics"));
+    det.append(h("div", { class: "gallery" }, d.labels.map(p => tile(p, base(p).replace(".png", ""), "label"))));
+    det.append(h("div", { class: "files", style: "margin-top: 14px" }, d.label_data.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p)))));
+  }
+  if (d.videos.length) {
+    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Videos"));
+    det.append(h("div", { class: "videos" }, d.videos.map(p => h("div", {},
+      h("video", { src: fileUrl(p), controls: true, preload: "metadata", muted: true }),
+      h("div", { class: "tile" }, h("div", { class: "t" }, h("span", {}, (p.includes("package") ? "frameless · " : "") + base(p)), h("a", { href: fileUrl(p) + "&download=1" }, "↓")))))));
+  }
+  if (d.maps.length) {
+    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Maps with legend"));
+    det.append(h("div", { class: "gallery" }, d.maps.map(p => tile(p, base(p).replace(".png", "")))));
+  }
+  if (d.data.length) {
+    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Data  —  QGIS / Houdini"));
+    det.append(h("div", { class: "files" }, d.data.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p)))));
+  }
+}
+
+// ------------------------------------------------------------------ jobs
+async function startJob(kind, options = {}, run = null) {
+  try {
+    const j = await api("/api/job", { kind, config: state.site.config, run, options });
+    state.jobs[j.id] = j; state.watch = j.id; state.since = 0; state.logLines = [];
+    renderJobs(); renderJobView();
+    document.getElementById("jobView")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (e) { alert(e.message); }
+}
+function renderJobs() {
+  const bar = $("#jobsBar"); bar.innerHTML = "";
+  const list = Object.values(state.jobs).sort((a, b) => b.started - a.started).slice(0, 4);
+  for (const j of list) {
+    const cls = j.status === "running" ? "run" : j.status === "done" ? "ok" : "bad";
+    bar.append(h("span", { class: "job", onclick: () => { state.watch = j.id; state.since = 0; state.logLines = []; renderJobView(); } },
+      h("span", { class: "dot " + cls }), j.label));
+  }
+}
+function renderJobView() {
+  const box = document.getElementById("jobView");
+  if (!box) return;
+  const j = state.jobs[state.watch];
+  if (!j) { box.innerHTML = ""; return; }
+  box.replaceChildren(
+    h("div", { style: "display: flex; gap: 14px; align-items: baseline; margin-top: 22px" },
+      h("span", { class: "dot " + (j.status === "running" ? "run" : j.status === "done" ? "ok" : "bad") }),
+      h("span", {}, j.label), h("span", { class: "cap", id: "jobStatus" }, j.status),
+      j.status === "running" ? h("button", { onclick: () => api("/api/job/stop", { id: j.id }) }, "Stop") : null),
+    h("div", { class: "progress", id: "jobProgress" }),
+    h("pre", { class: "log", id: "jobLog" }, (state.logLines || []).join("\n")));
+}
+async function poll() {
+  const id = state.watch;
+  if (id && state.jobs[id]) {
+    try {
+      const j = await api(`/api/job?id=${id}&since=${state.since}`);
+      const was = state.jobs[id].status;
+      state.jobs[id] = j;
+      if (j.lines.length) {
+        state.logLines = (state.logLines || []).concat(j.lines).slice(-3000);
+        state.since = j.n;
+        const log = document.getElementById("jobLog");
+        if (log) { const atEnd = log.scrollTop + log.clientHeight > log.scrollHeight - 30;
+          log.textContent = state.logLines.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight; }
+      }
+      const p = document.getElementById("jobProgress"); if (p) p.textContent = j.status === "running" ? j.last : "";
+      const st = document.getElementById("jobStatus"); if (st) st.textContent = j.status;
+      if (was === "running" && j.status !== "running") {
+        renderJobs(); await loadSites();
+        if (state.current) await openSite(state.current, true);
+      }
+    } catch (e) { /* server restarting */ }
+  }
+  setTimeout(poll, 900);
+}
+
+async function createSite() {
+  $("#nsErr").textContent = "";
+  try {
+    const r = await api("/api/new-site", { site: $("#nsName").value, template: $("#nsTpl").value, video: $("#nsVideo").value, geotiff: $("#nsMap").value });
+    newSiteDlg.close(); await loadSites(); openSite(r.config);
+  } catch (e) { $("#nsErr").textContent = e.message; }
+}
+
+loadSites().then(() => { if (state.sites.length) openSite(state.sites[0].config); });
+poll();
+</script>
+</body>
+</html>

@@ -139,6 +139,43 @@ def cmd_process(args):
     stage_process(cfg, run_dir, log=RunLog(run_dir / "run_log.txt"))
 
 
+def cmd_package(args):
+    from .geo import load_geotiff
+    from .package import build_package
+
+    cfg = _cfg(args)
+    run_dir = _run_dir_arg(cfg, args.run)
+    raster = load_geotiff(cfg.path("geotiff"), max_dim=8000) if cfg.get("geotiff") else None
+    build_package(cfg, run_dir, raster, plate=not args.no_plate)
+
+
+def cmd_locate(args):
+    from .locate import camera_from_place, search, write_camera_position
+
+    hits = search(args.place, limit=args.limit)
+    if not hits:
+        raise SystemExit(f"OpenStreetMap found nothing for {args.place!r}")
+    for k, h in enumerate(hits, 1):
+        print(f"{k}. {h['name']}\n   E {h['E']:.1f}  N {h['N']:.1f}  (~{h['size_m']:.0f} m across)")
+    pick = hits[args.pick - 1]
+    cam = camera_from_place(pick, args.floor, args.floor_height, ground_offset_m=args.ground_m)
+    if args.height is not None:
+        cam["height_m"] = args.height
+        cam["height_tol_m"] = round(max(1.0, 0.06 * args.height), 1)
+    print("\ncamera_position:\n" + "".join(f"  {k}: {v}\n" for k, v in cam.items()))
+    if args.config and args.write:
+        write_camera_position(args.config, cam, note=f"OSM: {pick['name'][:60]}")
+        print(f"written to {args.config}")
+    elif args.config:
+        print("add --write to put this into the config")
+
+
+def cmd_ui(args):
+    from .ui import serve
+
+    serve(Path(args.root), port=args.port, open_browser=not args.no_browser)
+
+
 def cmd_run(args):
     from .pipeline import run_all
 
@@ -168,8 +205,12 @@ def cmd_debug_video(args):
     meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
     raw = pd.read_csv(run_dir / "raw_tracks.csv")
     raw["class"] = raw["track_id"].map(assign_track_classes(raw)).fillna(raw["class"])
+    clean = None
+    if (cfg.get("package") or {}).get("enabled", True) and not args.boxes:
+        clean = run_dir / "package" / "images" / "overlay.mp4"   # the same, without labels
+        clean.parent.mkdir(parents=True, exist_ok=True)
     render_debug_video(Path(meta["video"]), raw, cfg, run_dir / "debug.mp4", meta["fps"],
-                       site_roi(cfg), run_dir=run_dir)
+                       site_roi(cfg), run_dir=run_dir, clean_path=clean)
 
 
 def cmd_groundtruth(args):
@@ -273,6 +314,30 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-frames", type=int)
     s.add_argument("--debug-video", action="store_true", help="also write debug.mp4")
     s.set_defaults(func=cmd_run)
+
+    s = common(sub.add_parser("package", help="frameless images + labels/metrics for a run"))
+    s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
+    s.add_argument("--no-plate", action="store_true", help="skip the complete plate")
+    s.set_defaults(func=cmd_package)
+
+    s = sub.add_parser("locate", help="camera position from a place name (OpenStreetMap)")
+    s.add_argument("place", help='e.g. "Urbanest Canary Wharf"')
+    s.add_argument("--floor", type=float, help="floor you filmed from (height = floor x 3.1 m)")
+    s.add_argument("--floor-height", type=float, default=3.1, help="m per floor")
+    s.add_argument("--height", type=float, help="camera height above the ground in m instead")
+    s.add_argument("--ground-m", type=float, default=0.0,
+                   help="building ground level above the mapped ground (m)")
+    s.add_argument("--pick", type=int, default=1, help="use the Nth search result")
+    s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--config", "-c", help="site YAML to put camera_position into")
+    s.add_argument("--write", action="store_true", help="write it into --config")
+    s.set_defaults(func=cmd_locate)
+
+    s = sub.add_parser("ui", help="open the local web interface")
+    s.add_argument("--root", default=".", help="project folder (with sites/, runs/)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true")
+    s.set_defaults(func=cmd_ui)
 
     s = common(sub.add_parser("debug-video", help="render debug.mp4 for an existing run"))
     s.add_argument("--run", default="latest")

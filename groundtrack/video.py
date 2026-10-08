@@ -48,6 +48,56 @@ def read_frame(path: str | Path, frame: int = 0) -> np.ndarray:
 
 def point_in_polygon(points: np.ndarray, polygon) -> np.ndarray:
     """Vectorised test of (N, 2) pixel points against a polygon [[x, y], ...]."""
-    poly = np.asarray(polygon, np.float32).reshape(-1, 1, 2)
-    return np.array([cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0
-                     for x, y in np.asarray(points, float).reshape(-1, 2)], bool)
+    from matplotlib.path import Path as MplPath
+
+    pts = np.asarray(points, float).reshape(-1, 2)
+    if len(pts) == 0:
+        return np.zeros(0, bool)
+    return MplPath(np.asarray(polygon, float)).contains_points(pts, radius=1e-9)
+
+
+class VideoSink:
+    """Write BGR frames to an .mp4. Uses ffmpeg's H.264 encoder through a pipe when ffmpeg
+    is installed (fast, small files that play everywhere), else OpenCV's MPEG-4 writer."""
+
+    def __init__(self, path, fps: float, size: tuple[int, int], crf: int = 19):
+        import shutil
+        import subprocess
+
+        self.path = str(path)
+        w, h = size
+        self.size = (w - w % 2, h - h % 2)          # H.264 / yuv420p needs even dimensions
+        self.proc = None
+        self.writer = None
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            self.proc = subprocess.Popen(
+                [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                 "-s", f"{self.size[0]}x{self.size[1]}", "-r", f"{fps:.6f}", "-i", "-",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", self.path],
+                stdin=subprocess.PIPE)
+        else:
+            self.writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"mp4v"), fps,
+                                          self.size)
+
+    def write(self, frame: np.ndarray) -> None:
+        if frame.shape[1] != self.size[0] or frame.shape[0] != self.size[1]:
+            frame = frame[: self.size[1], : self.size[0]]
+        if self.proc is not None:
+            self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        else:
+            self.writer.write(frame)
+
+    def release(self) -> None:
+        if self.proc is not None:
+            self.proc.stdin.close()
+            self.proc.wait()
+        elif self.writer is not None:
+            self.writer.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.release()

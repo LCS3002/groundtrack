@@ -130,6 +130,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
 
     window = (meta["start_frame"] / fps, meta["end_frame"] / fps)
     stats = exports.compute_stats(points, summary, cfg, window)
+    check = _people_height_check(cfg, raw, h, reg, log)
+    if check:
+        stats["calibration_check"] = check
     out["stats_json"] = run_dir / "stats.json"
     out["stats_json"].write_text(json.dumps(stats, indent=2), encoding="utf-8")
     out["stats_csv"] = run_dir / "stats.csv"
@@ -156,6 +159,7 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         visuals.plot_flow_field(field, sel, raster, cfg, png, float(cfg["field"]["cell_size_m"]),
                                 rng, label)
         out[png.stem] = png
+    pkg = _package_dir(cfg, run_dir)
     if cfg["visuals"].get("topdown_video", True) and len(points):
         from .animation import render_topdown_video
 
@@ -163,7 +167,7 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         render_topdown_video(points, raster, cfg, out["topdown_video"], fps / stride,
                              visuals._extent(points, raster, cfg),
                              speedup=float(cfg["visuals"].get("topdown_video_speedup", 1.0)),
-                             log=log)
+                             log=log, clean_path=pkg and pkg / "topdown.mp4")
     if cfg["visuals"].get("flowfield_video", True) and len(points):
         from .animation import render_flowfield_video
 
@@ -172,7 +176,8 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         render_flowfield_video(pd.read_csv(run_dir / "vector_field.csv"), points, raster, cfg,
                                out["flowfield_video"], visuals._extent(points, raster, cfg),
                                float(cfg["field"]["cell_size_m"]),
-                               cfg.groups[gname].speed_range, log=log)
+                               cfg.groups[gname].speed_range, log=log,
+                               clean_path=pkg and pkg / "flowfield.mp4")
 
     if cfg["debug_video"].get("enabled"):
         from .debug_video import render_debug_video
@@ -184,13 +189,55 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
             r["class"] = r["track_id"].map(cls).fillna(r["class"])
             out["debug_video"] = run_dir / "debug.mp4"
             render_debug_video(video, r, cfg, out["debug_video"], fps,
-                               site_roi(cfg), log=log, run_dir=run_dir)
+                               site_roi(cfg), log=log, run_dir=run_dir,
+                               clean_path=pkg and pkg / "overlay.mp4")
         else:
             log(f"debug video skipped: {video} not found")
+
+    if pkg and len(points):
+        from .package import build_package
+
+        try:
+            out["package"] = build_package(cfg, run_dir, raster, video, log=log)
+        except Exception as e:  # never lose a finished run over the presentation layer
+            log(f"package failed: {e!r} (re-try with `groundtrack package`)")
 
     _log_stats(stats, log)
     log(f"processing took {time.time() - t0:.1f} s. Outputs in {run_dir}")
     return out
+
+
+def _package_dir(cfg: Config, run_dir: Path) -> Path | None:
+    """package/images (created) when packages are on, else None."""
+    if not (cfg.get("package") or {}).get("enabled", True):
+        return None
+    d = Path(run_dir) / "package" / "images"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:
+    """How tall people would be under this calibration (~1.7 m = consistent)."""
+    if "person" not in cfg.classes:
+        return None
+    from .selfcal import PERSON_HEIGHT_M, people_check
+    from .trajectories import max_range_for
+
+    try:
+        chk = people_check(raw, h, reg, max_range_for(cfg, h, "people"))
+    except Exception as e:  # a check must never break a run
+        log(f"  calibration check skipped: {e}")
+        return None
+    if chk:
+        z, err = chk["implied_person_height_m"], chk["scale_error_pct"]
+        verdict = "consistent" if abs(err) <= 10 else "CHECK the calibration"
+        log(f"  calibration check: people come out {z:.2f} m tall (expected ~{PERSON_HEIGHT_M} m,"
+            f" {err:+.0f}%) -> {verdict}")
+        if abs(err) > 10:
+            log("    with a camera almost level with the ground this mostly reflects the camera "
+                "height / tilt; ground positions can still be right. Re-click spread-out points "
+                "or check camera_position.height_m.")
+    return chk
 
 
 def _field_groups(points: pd.DataFrame) -> list[str]:
@@ -206,7 +253,8 @@ def _export_field(cfg: Config, run_dir: Path, points: pd.DataFrame, h: Homograph
     fc = cfg["field"]
     cell, smooth = float(fc["cell_size_m"]), float(fc["smooth_m"])
     kw = dict(include_predicted=bool(fc["include_predicted"]),
-              confidence_samples=float(fc["confidence_samples"]))
+              confidence_samples=float(fc["confidence_samples"]),
+              direction_bins=int(fc.get("direction_bins") or 0))
     out, files, slices = {}, {}, {}
     for gname in _field_groups(points):
         sel = points if gname == "all" else points[points["group"] == gname]

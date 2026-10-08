@@ -260,7 +260,9 @@ def plot_flow_field(field: pd.DataFrame, points: pd.DataFrame, raster: GeoRaster
     fig.text(0.02, 1 - 0.25 / fig.get_figheight(), f"{cfg.site}: {label.lower()} flow field",
              fontsize=13, weight="bold", color=INK, va="top")
     fig.text(0.02, 1 - 0.55 / fig.get_figheight(),
-             f"smoothed mean velocity, {cfg['field']['smooth_m']:g} m kernel · line width = "
+             ("velocity of the dominant direction" if cfg["field"].get("direction_bins")
+              else "smoothed mean velocity")
+             + f", {cfg['field']['smooth_m']:g} m kernel · line width = "
              "amount of data · EPSG:27700", fontsize=8, color="#555", va="top")
     fig.savefig(path, dpi=int(vis["dpi"]), facecolor="white")
     plt.close(fig)

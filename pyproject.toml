@@ -31,6 +31,9 @@ groundtrack = "groundtrack.cli:main"
 [tool.setuptools]
 packages = ["groundtrack"]
 
+[tool.setuptools.package-data]
+groundtrack = ["ui.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["e2e: end-to-end test that runs YOLO on a generated sample video (slower)"]

@@ -246,6 +246,31 @@ def vehicle_centre(x, y, heading, group: Group, cls: str, h: Homography | None =
     return (np.where(ok, x + mag * d[:, 0], x), np.where(ok, y + mag * d[:, 1], y))
 
 
+# --------------------------------------------------------------------------- range
+# Depth resolution (m per pixel of foot jitter) beyond which a group's positions are too
+# coarse to keep, for `projection.max_range_m: auto`.
+DEPTH_RESOLUTION_LIMIT = {"people": 0.25, "cycles": 0.4, "vehicles": 1.0}
+
+
+def max_range_for(cfg: Config, h: Homography, group: str) -> float | None:
+    """Farthest reliable distance (m) from the camera for a group, or None (keep all).
+
+    `projection.max_range_m` may be a number, null, or "auto": a ground point at distance
+    d seen from height H moves ~(d^2 + H^2) / (f H) metres per pixel along the view ray,
+    so the range where that reaches the group's limit is sqrt(limit f H - H^2)."""
+    v = (cfg.get("projection") or {}).get("max_range_m")
+    if v in (None, "", False):
+        return None
+    if str(v).lower() != "auto":
+        return float(v)
+    cam = getattr(h, "camera_params", None) or h.camera()
+    if not cam or not cam.get("focal_px") or not cam.get("height_m"):
+        return None
+    f, hh = float(cam["focal_px"]), abs(float(cam["height_m"]))
+    lim = DEPTH_RESOLUTION_LIMIT.get(group, 0.5)
+    return float(np.sqrt(max(lim * f * hh - hh * hh, hh * hh)))
+
+
 # --------------------------------------------------------------------------- pipeline
 def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, stride: int = 1,
                    lens: Lens | None = None, log=print, registration: dict | None = None
@@ -270,17 +295,21 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
         if rec.any():
             log(f"  {int(rec.sum())} foot points rebuilt where the lower body was hidden")
     g = project_to_ground(raw, h, lens, registration, uv)
-    max_range = (cfg.get("projection") or {}).get("max_range_m")
-    cam = getattr(h, "camera_params", None) or h.camera()
-    if max_range and cam:
-        d = np.hypot(g["gx"] - cam["E"], g["gy"] - cam["N"])
-        far = d > float(max_range)
-        if far.any():
-            log(f"  {int(far.sum())} samples farther than {max_range} m from the camera dropped")
-        g = g[~far]
     n_above = len(raw) - len(g)
     if n_above:
         log(f"  {n_above} rows above the horizon / outside the ground plane dropped")
+    cam = getattr(h, "camera_params", None) or h.camera()
+    if cam and len(g):
+        limit = g["class"].map(
+            {c: max_range_for(cfg, h, cfg.class_to_group[c]) for c in cfg.classes})
+        limit = limit.astype(float).fillna(np.inf).to_numpy()
+        d = np.hypot(g["gx"] - cam["E"], g["gy"] - cam["N"]).to_numpy()
+        far = d > limit
+        if far.any():
+            rng = ", ".join(f"{gn} {max_range_for(cfg, h, gn):.0f} m" for gn in cfg.groups
+                            if max_range_for(cfg, h, gn))
+            log(f"  {int(far.sum())} samples beyond the reliable range dropped ({rng})")
+        g = g[~far]
 
     next_id = int(raw["track_id"].max()) + 1 if len(raw) else 1
     stats = {"spikes": 0, "splits": 0, "stitched": 0, "short": 0, "stationary": 0,
@@ -383,24 +412,35 @@ def stitch_segments(segments: list[Segment], cfg: Config, max_gap_s: float) -> l
     """Join a segment that ends to one that starts up to max_gap_s later, if the start lies
     where the first segment's ground velocity predicts (within the group's stitch radius,
     growing with the gap). Greedy by smallest prediction error; one link per end/start."""
+    n = len(segments)
+    if n < 2:
+        return segments
+    # each segment's start / end time and state, computed once (vectorised pair test below)
+    t0 = np.array([s.t0 for s in segments])
+    t1 = np.array([s.t1 for s in segments])
+    ends = [s.end_state(at_end=True) for s in segments]
+    starts = [s.end_state(at_end=False) for s in segments]
+    pa = np.array([e[0] for e in ends])
+    va = np.array([e[1] for e in ends])
+    pb = np.array([e[0] for e in starts])
+    vb = np.array([e[1] for e in starts])
+    groups = np.array([s.group for s in segments])
     cands = []
-    for i, a in enumerate(segments):
-        pa, va = a.end_state(at_end=True)
-        grp = cfg.groups[a.group]
-        for j, b in enumerate(segments):
-            if i == j or b.group != a.group:
-                continue
-            gap = b.t0 - a.t1
-            if not (0 < gap <= max_gap_s):
-                continue
-            pb, vb = b.end_state(at_end=False)
-            jump = np.linalg.norm(pb - pa)
-            if jump > grp.max_speed * gap + grp.jump_tolerance_m:
-                continue
-            # predict across the gap with the mean of the two velocities (robust to one bad end)
-            err = np.linalg.norm(pb - (pa + 0.5 * (va + vb) * gap))
-            if err <= grp.stitch_radius_m * (1 + gap):
-                cands.append((err, i, j))
+    for gname in np.unique(groups):
+        grp = cfg.groups[gname]
+        idx = np.flatnonzero(groups == gname)
+        gap = t0[idx][None, :] - t1[idx][:, None]               # [end i, start j]
+        ok = (gap > 0) & (gap <= max_gap_s)
+        if not ok.any():
+            continue
+        ii, jj = np.nonzero(ok)
+        g = gap[ii, jj]
+        a, b = idx[ii], idx[jj]
+        jump = np.linalg.norm(pb[b] - pa[a], axis=1)
+        # predict across the gap with the mean of the two velocities (robust to one bad end)
+        err = np.linalg.norm(pb[b] - (pa[a] + 0.5 * (va[a] + vb[b]) * g[:, None]), axis=1)
+        keep = (jump <= grp.max_speed * g + grp.jump_tolerance_m) &                (err <= grp.stitch_radius_m * (1 + g))
+        cands += list(zip(err[keep].tolist(), a[keep].tolist(), b[keep].tolist()))
     nxt, has_prev, used_end = {}, set(), set()
     for _err, i, j in sorted(cands):
         if i in used_end or j in has_prev:

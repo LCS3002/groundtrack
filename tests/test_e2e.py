@@ -19,7 +19,17 @@ EXPECTED_FILES = ["raw_tracks.csv", "raw_tracks_meta.json", "points.csv", "track
                   "stats.csv", "houdini_import.py", "topdown.png", "density.png",
                   "speed_histogram.png", "config_used.yaml", "homography_used.json",
                   "run_log.txt", "debug.mp4", "vector_field.csv", "flow_field.png",
-                  "houdini_field.py", "topdown.mp4", "flowfield.mp4"]
+                  "houdini_field.py", "topdown.mp4", "flowfield.mp4",
+                  # package: frameless images + videos, labels + metrics, the complete plate
+                  "package/images/00_complete.png", "package/images/insitu_frame.png",
+                  "package/images/insitu_tracks.png", "package/images/plan_map.png",
+                  "package/images/plan_tracks.png", "package/images/plan_flowfield.png",
+                  "package/images/plan_density.png", "package/images/layers/plan_trails.png",
+                  "package/images/topdown.mp4", "package/images/flowfield.mp4",
+                  "package/images/overlay.mp4", "package/labels/00_complete.png",
+                  "package/labels/legend_speed_light.png", "package/labels/scale_bar_dark.png",
+                  "package/labels/north_arrow_light.png", "package/labels/metrics.csv",
+                  "package/labels/metrics.json", "package/labels/track_metrics.csv"]
 
 
 @pytest.fixture(scope="module")
@@ -53,6 +63,25 @@ def test_all_outputs_written(demo_run):
     missing = [f for f in EXPECTED_FILES if not (run_dir / f).exists()]
     assert not missing
     assert (run_dir / "topdown.png").stat().st_size > 50_000
+
+
+def test_package_images_stack(demo_run):
+    """Every plan image and layer shares one size, and the scale bar matches its scale."""
+    from PIL import Image
+
+    *_, run_dir = demo_run
+    img = run_dir / "package" / "images"
+    plan = sorted(img.glob("plan_*.png")) + sorted((img / "layers").glob("plan_*.png"))
+    sizes = {Image.open(p).size for p in plan}
+    assert len(plan) >= 6 and len(sizes) == 1
+    info = json.loads((run_dir / "package" / "labels" / "metrics.json").read_text())
+    assert tuple(info["plan"]["size_px"]) == sizes.pop()
+    e = info["plan"]["extent_m"]
+    assert info["plan"]["px_per_m"] == pytest.approx(info["plan"]["size_px"][0]
+                                                     / (e["east"] - e["west"]), rel=1e-3)
+    assert Image.open(img / "layers" / "plan_trails.png").mode == "RGBA"
+    figures = pd.read_csv(run_dir / "package" / "labels" / "metrics.csv")
+    assert {"tracks", "median_speed", "duration"} <= set(figures["metric"])
 
 
 def test_tracks_match_ground_truth(demo_run):

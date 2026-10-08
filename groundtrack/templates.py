@@ -25,7 +25,7 @@ detection:
   roi: null                 # run `groundtrack roi --config {fname}` to draw one
   record_predicted: true
   suppress_riders: true
-  stabilize: true           # compensate camera movement (handheld / wobbly mount)
+  stabilize: auto           # measures camera motion first; compensates only if it moved
 
 groups:
   people:
@@ -38,6 +38,9 @@ groups:
     speed_range: [0.0, 10.0]
     max_speed: 20.0
     smooth_window_s: 0.8
+
+projection:
+  max_range_m: auto         # drop far people where 1 px of jitter > 0.25 m of depth
 
 cleaning:
   min_track_s: 2.0
@@ -77,7 +80,7 @@ detection:
   roi: null                 # strongly recommended: cut the far, blurry end of the road
   record_predicted: true
   suppress_riders: true
-  stabilize: true           # cheap insurance against a slowly creeping tripod
+  stabilize: auto           # measures camera motion first; compensates only if it moved
 
 groups:
   vehicles:
@@ -89,6 +92,9 @@ groups:
     ground_offset_m: {{default: 2.2, bus: 5.5, truck: 5.0, motorcycle: 1.0}}
     offset_mode: travel               # travel | view   (see README: 'Vehicle ground point')
     vehicle_width_m: 1.8
+
+projection:
+  max_range_m: auto         # drop far vehicles where 1 px of jitter > 1 m of depth
 
 cleaning:
   min_track_s: 1.0

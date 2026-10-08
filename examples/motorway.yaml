@@ -20,7 +20,7 @@ detection:
   roi: null                 # strongly recommended: cut the far, blurry end of the road
   record_predicted: true
   suppress_riders: true
-  stabilize: true           # compensate camera movement (see README)
+  stabilize: auto           # measures camera motion first; compensates only if it moved
 
 groups:
   vehicles:

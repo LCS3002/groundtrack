@@ -22,3 +22,6 @@ models/
 calibrate_all.py
 render_overlays.py
 deliver.py
+.gstack/
+rebuild_all.py
+start_ui.bat

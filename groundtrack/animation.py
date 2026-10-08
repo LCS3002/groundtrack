@@ -46,7 +46,8 @@ def _nice(span):
 
 def render_topdown_video(points: pd.DataFrame, raster: GeoRaster | None, cfg: Config,
                          out_path: Path, fps: float, ext, width: int = 1920,
-                         speedup: float = 1.0, log=print) -> None:
+                         speedup: float = 1.0, log=print, clean_path: Path | None = None) -> None:
+    """topdown.mp4; clean_path also writes the same video without any labels."""
     from tqdm import tqdm
 
     if points.empty:
@@ -71,7 +72,10 @@ def render_topdown_video(points: pd.DataFrame, raster: GeoRaster | None, cfg: Co
     frames = sorted(by_frame)
     th = max(2, int(round(W / 900)))
     out_fps = fps * speedup
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (W, H))
+    from .video import VideoSink
+
+    writer = VideoSink(out_path, out_fps, (W, H))
+    clean = VideoSink(clean_path, out_fps, (W, H)) if clean_path else None
     comp = base.copy()          # the map never changes: trails are drawn straight onto it
     last: dict[int, tuple] = {}
     step = int(np.median(np.diff(frames))) if len(frames) > 1 else 1
@@ -100,6 +104,8 @@ def render_topdown_video(points: pd.DataFrame, raster: GeoRaster | None, cfg: Co
         for p, col in heads:
             cv2.circle(img, p, 2 * th + 1, (15, 15, 15), -1, cv2.LINE_AA)
             cv2.circle(img, p, 2 * th, col, -1, cv2.LINE_AA)
+        if clean is not None:
+            clean.write(img)
         # clock, scale bar, north arrow, legend
         cv2.putText(img, f"{cfg.site}   t = {f / fps:6.1f} s", (16, 34), font, 0.8,
                     (255, 255, 255), 2, cv2.LINE_AA)
@@ -115,6 +121,8 @@ def render_topdown_video(points: pd.DataFrame, raster: GeoRaster | None, cfg: Co
         _legend(img, cfg, sorted(set(points["group"])))
         writer.write(img)
     writer.release()
+    if clean is not None:
+        clean.release()
     log(f"topdown video -> {out_path}")
 
 
@@ -144,9 +152,11 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
                            cfg: Config, out_path: Path, ext, cell: float, speed_range,
                            seconds: float = 12.0, fps: float = 30.0, width: int = 1920,
                            n_particles: int | None = None, time_scale: float = 1.0,
-                           min_confidence: float = 0.25, seed: int = 0, log=print) -> None:
+                           min_confidence: float = 0.25, seed: int = 0, log=print,
+                           clean_path: Path | None = None) -> None:
     """flowfield.mp4: particles streaming through the smoothed vector field over the map
-    (the same field houdini_field.py hands to a particle sim), coloured by speed."""
+    (the same field houdini_field.py hands to a particle sim), coloured by speed.
+    clean_path also writes the same video without any labels."""
     from scipy.ndimage import map_coordinates
     from tqdm import tqdm
 
@@ -186,11 +196,17 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
 
     px, py, life = spawn(n)
     age = rng.uniform(0, 1, n) * life
-    trails = np.zeros((H, W, 3), np.float32)
+    trails = np.zeros((H, W, 3), np.uint8)
+    base_u8 = np.clip(base, 0, 255).astype(np.uint8)
     lo, hi = speed_range
+    n_bins = 24
+    bin_cols = (ramp_rgb(np.linspace(lo, hi, n_bins), lo, hi)[:, ::-1] * 255).tolist()
     dt = time_scale / fps
     th = max(1, int(round(W / 1100)))
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
+    from .video import VideoSink
+
+    writer = VideoSink(out_path, fps, (W, H))
+    clean = VideoSink(clean_path, fps, (W, H)) if clean_path else None
     for _ in tqdm(range(int(seconds * fps)), desc="flow-field video", unit="frame",
                   mininterval=2.0):
         u, v = sample(U, px, py), sample(V, px, py)
@@ -199,12 +215,15 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
         u2, v2 = sample(U, mx, my), sample(V, mx, my)
         nx, ny = px + u2 * dt, py + v2 * dt
         spd = np.hypot(u2, v2)
-        cols = (ramp_rgb(spd, lo, hi)[:, ::-1] * 255).astype(np.float32)
-        trails *= 0.93
-        p0 = np.column_stack([(px - x0) * sx, (y1 - py) * sy]).astype(np.int32)
-        p1 = np.column_stack([(nx - x0) * sx, (y1 - ny) * sy]).astype(np.int32)
-        for a, b, c in zip(p0, p1, cols):
-            cv2.line(trails, tuple(a), tuple(b), tuple(float(x) for x in c), th, cv2.LINE_AA)
+        trails = cv2.convertScaleAbs(trails, alpha=0.93)          # fade older trail pieces
+        p0 = np.column_stack([(px - x0) * sx, (y1 - py) * sy])
+        p1 = np.column_stack([(nx - x0) * sx, (y1 - ny) * sy])
+        segs = np.stack([p0, p1], axis=1).round().astype(np.int32)    # (n, 2, 2)
+        k = np.clip(((spd - lo) / max(hi - lo, 1e-9) * (n_bins - 1)).round().astype(int),
+                    0, n_bins - 1)
+        for b in np.unique(k):                                      # one draw call per colour
+            cv2.polylines(trails, list(segs[k == b].reshape(-1, 2, 1, 2)), False, bin_cols[b],
+                          th, cv2.LINE_AA)
         px, py, age = nx, ny, age + dt / time_scale
         conf = sample(C, px, py)
         dead = (age > life) | (conf < min_confidence * 0.6) | (px < x0) | (px > x1) | \
@@ -212,9 +231,9 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
         if dead.any():
             px[dead], py[dead], life[dead] = spawn(int(dead.sum()))
             age[dead] = 0.0
-        glow = np.clip(trails, 0, 255)
-        mask = (glow.max(axis=2, keepdims=True) / 255.0) ** 0.8
-        img = (base * (1 - mask) + glow * mask).astype(np.uint8)
+        img = cv2.add(base_u8, trails)                              # light on a dark map
+        if clean is not None:
+            clean.write(img)
         cv2.putText(img, f"{cfg.site}: smoothed vector field", (16, 34), cv2.FONT_HERSHEY_SIMPLEX,
                     0.8, (255, 255, 255), 2, cv2.LINE_AA)
         bl = int(_nice(x1 - x0) * sx)
@@ -231,4 +250,6 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
         _legend(img, cfg, sorted(set(points["group"])))
         writer.write(img)
     writer.release()
+    if clean is not None:
+        clean.release()
     log(f"flow-field video -> {out_path}")

@@ -186,7 +186,15 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
         f"tracker {ttype}, classes {cfg.classes}")
 
     registrar, reg_frames, reg_H, reg_inl, ref_frame = None, [], [], [], 0
-    if det.get("stabilize"):
+    stab = det.get("stabilize")
+    if stab == "auto":
+        from .registration import measure_camera_motion
+
+        moved = measure_camera_motion(video, reference_frame_for(cfg))
+        stab = moved > float(det.get("stabilize_threshold_px", 2.5))
+        log(f"stabilize auto: camera moved up to {moved:.1f} px -> "
+            + ("compensating camera motion" if stab else "static camera, no compensation needed"))
+    if stab:
         from .registration import FrameRegistrar
         from .video import read_frame
 
@@ -199,7 +207,6 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     rows: list[tuple] = []
     pending: dict[int, list[tuple]] = {}
-    n_pred_kept = 0
     record_pred = bool(det.get("record_predicted", True))
 
     it = range(start, end)
@@ -208,17 +215,12 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
         from tqdm import tqdm
 
         pbar = tqdm(total=(end - start + stride - 1) // stride, unit="frame", desc="detect+track")
-    for fidx in it:
-        if (fidx - start) % stride:
-            if not cap.grab():
-                break
-            continue
-        ok, frame = cap.read()
-        if not ok:
-            break
+    batch_size = max(1, int(det.get("batch", 4)))
+    n_pred_kept = 0
+
+    def handle(fidx, frame, r):
+        nonlocal n_pred_kept
         t = fidx / info.fps
-        r = model.predict(frame, imgsz=det["imgsz"], conf=det["conf"], iou=det["iou"],
-                          classes=predict_ids, device=device, verbose=False, **precision)[0]
         b = r.boxes.cpu().numpy()
         xyxy, conf, cls = b.xyxy, b.conf, b.cls.astype(int)
         H_ref = None
@@ -269,6 +271,31 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
                 del pending[tid]
         if pbar:
             pbar.update(1)
+
+    batch: list[tuple[int, np.ndarray]] = []
+
+    def flush():
+        if not batch:
+            return
+        results = model.predict([f for _, f in batch], imgsz=det["imgsz"], conf=det["conf"],
+                                iou=det["iou"], classes=predict_ids, device=device,
+                                verbose=False, **precision)
+        for (fidx, frame), r in zip(batch, results):   # tracking stays strictly in order
+            handle(fidx, frame, r)
+        batch.clear()
+
+    for fidx in it:
+        if (fidx - start) % stride:
+            if not cap.grab():
+                break
+            continue
+        ok, frame = cap.read()
+        if not ok:
+            break
+        batch.append((fidx, frame))
+        if len(batch) >= batch_size:
+            flush()
+    flush()
     cap.release()
     if pbar:
         pbar.close()
@@ -289,7 +316,8 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
         save_registration(out_csv.with_name("registration.npz"), reg_frames, reg_H, reg_inl,
                           ref_frame)
         drift = [drift_px(H, info.width, info.height) for H in reg_H]
-        failed = int(sum(1 for n in reg_inl if n == 0))
+        failed = int(sum(1 for k, ok in enumerate(registrar.abs_ok)
+                         if k % registrar.abs_every == 0 and not ok))
         reg_info = {"reference_frame": ref_frame, "max_drift_px": round(max(drift), 1),
                     "registration_failures": failed}
         log(f"stabilize: camera moved up to {max(drift):.1f} px from the reference frame; "

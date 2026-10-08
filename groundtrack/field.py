@@ -7,11 +7,19 @@ smooth, keeps real speeds (it is an average, not a sum), and fades out where the
 data instead of inventing motion there.
 
 Per cell:
-  vx, vy, speed, heading   smoothed mean velocity (m/s, heading clockwise from grid north)
+  vx, vy, speed, heading   smoothed velocity (m/s, heading clockwise from grid north)
   density                  occupancy, object-seconds per m^2 (same units as density.png)
   weight                   effective number of samples under the kernel
   confidence               1 - exp(-weight / confidence_samples), 0..1: use it to fade
                            forces / emission at the edges of the observed area
+  dominance                share of the samples moving in the cell's direction (0..1):
+                           1 = one-way flow, ~0.5 = two equal opposite streams
+
+Direction-aware (direction_bins > 0, the default): samples are sorted into heading sectors
+and every cell takes the velocity of its dominant direction (with the neighbouring sectors).
+Opposite streams close together (two carriageways, a two-way footpath) then keep their
+full speed instead of averaging out to a slow band between them. direction_bins = 0 gives
+the plain mean velocity.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 
 FIELD_COLUMNS = ["cell_x", "cell_y", "i", "j", "vx", "vy", "speed", "heading", "density",
-                 "weight", "confidence"]
+                 "weight", "confidence", "dominance"]
 
 
 def _grid_bounds(x, y, cell, pad_m):
@@ -34,7 +42,7 @@ def _grid_bounds(x, y, cell, pad_m):
 
 def smooth_field(points: pd.DataFrame, cell: float, smooth_m: float, dt: float,
                  include_predicted: bool = False, confidence_samples: float = 15.0,
-                 min_weight: float = 0.05, bounds=None) -> pd.DataFrame:
+                 min_weight: float = 0.05, bounds=None, direction_bins: int = 8) -> pd.DataFrame:
     """Smoothed vector field (one row per cell with any support), see module docstring.
 
     bounds: optional (i0, i1, j0, j1) so several fields (e.g. time slices) share one grid.
@@ -49,22 +57,46 @@ def smooth_field(points: pd.DataFrame, cell: float, smooth_m: float, dt: float,
     jj = np.floor(y / cell).astype(np.int64) - j0
     ok = (ii >= 0) & (ii < nx) & (jj >= 0) & (jj < ny)
     ii, jj = ii[ok], jj[ok]
-    cnt = np.zeros((ny, nx))
-    svx = np.zeros((ny, nx))
-    svy = np.zeros((ny, nx))
-    np.add.at(cnt, (jj, ii), 1.0)
-    np.add.at(svx, (jj, ii), p["vx"].to_numpy(float)[ok])
-    np.add.at(svy, (jj, ii), p["vy"].to_numpy(float)[ok])
+    pvx, pvy = p["vx"].to_numpy(float)[ok], p["vy"].to_numpy(float)[ok]
     sigma = max(smooth_m / cell, 1e-6)
     # sum (not mean) normalisation: blur(count) = effective samples under the kernel
     k = 2 * np.pi * sigma ** 2
-    w = gaussian_filter(cnt, sigma, mode="constant") * k
-    bvx = gaussian_filter(svx, sigma, mode="constant") * k
-    bvy = gaussian_filter(svy, sigma, mode="constant") * k
+
+    def blurred(sel):
+        c, sx, sy = (np.zeros((ny, nx)) for _ in range(3))
+        np.add.at(c, (jj[sel], ii[sel]), 1.0)
+        np.add.at(sx, (jj[sel], ii[sel]), pvx[sel])
+        np.add.at(sy, (jj[sel], ii[sel]), pvy[sel])
+        return tuple(gaussian_filter(a, sigma, mode="constant") * k for a in (c, sx, sy))
+
+    w, bvx, bvy = blurred(np.ones(len(ii), bool))
+    dominance = np.ones((ny, nx))
+    if direction_bins and direction_bins > 1:
+        # heading is held through stops by the cleaning step; fall back to the velocity
+        hd = (p["heading"].to_numpy(float)[ok] if "heading" in p
+              else np.degrees(np.arctan2(pvx, pvy)))
+        hd = np.where(np.isfinite(hd), hd, np.degrees(np.arctan2(pvx, pvy)))
+        nb = int(direction_bins)
+        sector = np.floor(((hd + 180.0 / nb) % 360) / (360.0 / nb)).astype(int) % nb
+        W, BX, BY = (np.zeros((nb, ny, nx)) for _ in range(3))
+        for b in range(nb):
+            if (sector == b).any():
+                W[b], BX[b], BY[b] = blurred(sector == b)
+        # each direction together with its neighbours (a stream on a sector edge stays whole)
+        mix = lambda a: a + 0.5 * (np.roll(a, 1, axis=0) + np.roll(a, -1, axis=0))  # noqa: E731
+        W2, BX2, BY2 = mix(W), mix(BX), mix(BY)
+        best = np.argmax(W2, axis=0)[None]
+        wb = np.take_along_axis(W2, best, 0)[0]
+        bvx, bvy = np.take_along_axis(BX2, best, 0)[0], np.take_along_axis(BY2, best, 0)[0]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            dominance = np.clip(np.where(w > 0, wb / (w + 1e-12), 0.0), 0, 1)
+        wv = wb
+    else:
+        wv = w
     with np.errstate(invalid="ignore", divide="ignore"):
-        vx = np.where(w > 0, bvx / w, 0.0)
-        vy = np.where(w > 0, bvy / w, 0.0)
-    density = gaussian_filter(cnt, sigma, mode="constant") * dt / (cell * cell)
+        vx = np.where(wv > 0, bvx / wv, 0.0)
+        vy = np.where(wv > 0, bvy / wv, 0.0)
+    density = w / k * dt / (cell * cell)
     conf = 1 - np.exp(-w / max(confidence_samples, 1e-9))
 
     jj_all, ii_all = np.nonzero(w >= min_weight)
@@ -72,14 +104,15 @@ def smooth_field(points: pd.DataFrame, cell: float, smooth_m: float, dt: float,
         "i": ii_all + i0, "j": jj_all + j0,
         "vx": vx[jj_all, ii_all], "vy": vy[jj_all, ii_all],
         "density": density[jj_all, ii_all], "weight": w[jj_all, ii_all],
-        "confidence": conf[jj_all, ii_all],
+        "confidence": conf[jj_all, ii_all], "dominance": dominance[jj_all, ii_all],
     })
     out["cell_x"] = (out["i"] + 0.5) * cell
     out["cell_y"] = (out["j"] + 0.5) * cell
     out["speed"] = np.hypot(out["vx"], out["vy"])
     out["heading"] = (np.degrees(np.arctan2(out["vx"], out["vy"])) + 360) % 360
     for c, nd in (("vx", 4), ("vy", 4), ("speed", 4), ("heading", 1), ("density", 5),
-                  ("weight", 3), ("confidence", 4), ("cell_x", 3), ("cell_y", 3)):
+                  ("weight", 3), ("confidence", 4), ("dominance", 3), ("cell_x", 3),
+                  ("cell_y", 3)):
         out[c] = out[c].round(nd)
     return out[FIELD_COLUMNS].sort_values(["j", "i"]).reset_index(drop=True)
 

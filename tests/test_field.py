@@ -213,3 +213,20 @@ def test_houdini_field_script(tmp_path, cfg, monkeypatch):
     geo = _Geo()
     _run(src, geo, monkeypatch, t=4.0, USE_TIME_SLICES=True)
     assert len(geo.vols) == 5
+
+
+def test_close_opposite_streams_keep_their_speed():
+    """Opposite lanes 4 m apart under a 4 m kernel: the mean field cancels to a slow band,
+    the direction-aware field keeps ~full speed everywhere and flags the mix."""
+    pts = pd.concat([_lane(180000.0, 25.0, n=60, track=1),
+                     _lane(180004.0, -25.0, n=60, track=2, x0=530050.0)])
+    mean = smooth_field(pts, cell=1.0, smooth_m=4.0, dt=DT, direction_bins=0)
+    dom = smooth_field(pts, cell=1.0, smooth_m=4.0, dt=DT)
+    mid = lambda f: f[((f["cell_y"] - 180002).abs() < 1) & (f["confidence"] > 0.5)  # noqa: E731
+                      & (f["cell_x"] - 530025).abs().lt(15)]
+    assert mid(mean)["speed"].median() < 10
+    assert mid(dom)["speed"].median() > 20
+    assert mid(dom)["dominance"].median() < 0.8
+    lane = dom[((dom["cell_y"] - 180000).abs() < 1) & (dom["confidence"] > 0.5)]
+    assert lane["vx"].median() == pytest.approx(25, abs=1)
+    assert (lane["dominance"] > 0.5).all()           # its own stream still dominates

@@ -41,7 +41,8 @@ DEFAULTS: dict[str, Any] = {
                                   # whose foot point is outside are ignored
         "record_predicted": True, # keep tracker-predicted positions bridging occlusions
         "suppress_riders": True,  # drop 'person' boxes sitting on a bicycle/motorcycle
-        "stabilize": False,       # register every frame to the calibration frame (camera moved)
+        "stabilize": False,       # True | False | "auto" (measure camera motion first)
+        "batch": 4,               # frames per YOLO call (GPU throughput)
         "edge_margin_px": 3,      # drop boxes touching the bottom frame edge: feet not visible
     },
     # Every tracked class must belong to exactly one group. Groups carry the
@@ -86,8 +87,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "projection": {
         # drop ground points farther than this from the camera (m). At shallow angles one
-        # pixel of foot jitter becomes metres far away; set it where the depth error per
-        # pixel gets too large (~0.2 m/px is a good limit). None = keep everything.
+        # pixel of foot jitter becomes metres far away. A number, None (keep everything) or
+        # "auto": per group, where the depth error reaches 0.25 m/px (people), 0.4 (cycles),
+        # 1.0 (vehicles); needs a calibration with a camera estimate.
         "max_range_m": None,
     },
     "cleaning": {
@@ -112,6 +114,7 @@ DEFAULTS: dict[str, Any] = {
         "confidence_samples": 15,   # effective samples for confidence ~0.63
         "time_window_s": None,      # e.g. 10 -> also a field per 10 s window (animated sims)
         "include_predicted": False,
+        "direction_bins": 8,        # each cell follows its dominant direction (0 = plain mean)
     },
     "stats": {
         "histogram_bins": 20,
@@ -128,6 +131,17 @@ DEFAULTS: dict[str, Any] = {
         "topdown_video": True,     # topdown.mp4: movement animated over the map
         "topdown_video_speedup": 1.0,
         "flowfield_video": True,   # flowfield.mp4: particles streaming through the vector field
+    },
+    # package/ per run: frameless images, separate labels + metrics, the complete plate
+    "package": {
+        "enabled": True,
+        "plan_height_px": 2400,   # size of every plan_* image (they all share one extent)
+        "title": None,            # plate title (default: the site name)
+        "index": None,            # small number next to the title, e.g. "03"
+        "subtitle": None,         # e.g. "Canary Wharf, London  ·  pedestrian movement"
+        "date": None,             # default: today, DD.MM.YYYY
+        "credit": None,           # imagery credit in the plate's footnote
+        "label_variants": ["light", "dark"],  # ink for dark / light backgrounds
     },
     "debug_video": {
         "enabled": False,

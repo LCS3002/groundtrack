@@ -51,81 +51,76 @@ def blur_box(img, x1, y1, x2, y2):
 PERSON_HEIGHT_M = 1.7
 
 
-def trail_samples(raw: pd.DataFrame, cfg: Config, run_dir: Path | None, fps: float,
-                  uv: np.ndarray):
-    """Smoothed trail position (reference-frame px) + speed colour range for every raw row.
-
-    Returns (pos, speed, lo, hi, mode):
-      "calibrated": smoothed ground path from points.csv projected back into the image, and
-                    its speed in m/s (rows removed by cleaning keep their raw foot point and
-                    get NaN speed -> drawn grey);
-      "approx":     not calibrated yet; people's on-screen speed is converted to ~m/s using
-                    their own box height (~1.7 m tall), so near and far people compare.
-                    Motion towards / away from the camera reads slower;
-      "relative":   other classes before calibration: px/s scaled to the 95th percentile.
-    """
+def _smooth_image_paths(raw: pd.DataFrame, uv: np.ndarray, fps: float, window_s: float = 0.4):
+    """Per-track Savitzky-Golay smoothing of the foot points in image space (+ px/s speed)."""
     from scipy.signal import savgol_filter
 
-    n = len(raw)
     pos = uv.astype(float).copy()
-    rd = Path(run_dir) if run_dir else None
-    if rd is not None and (rd / "points.csv").exists() and (rd / "track_summary.csv").exists():
-        from .homography import Homography
-
-        hp = rd / "homography_used.json"
-        h = Homography.load(hp if hp.exists() else cfg.path("homography"))
-        pts = pd.read_csv(rd / "points.csv")
-        summ = pd.read_csv(rd / "track_summary.csv")
-        px = h.to_pixel(pts[["x", "y"]].to_numpy())
-        pts["pu"], pts["pv"] = px[:, 0], px[:, 1]
-        lookup = {}
-        for row in summ.itertuples():
-            tp = pts[pts["track_id"] == row.track_id]
-            vals = list(zip(tp["frame"].tolist(), tp["speed"].tolist(), tp["pu"].tolist(),
-                            tp["pv"].tolist()))
-            for orig in str(row.tracker_ids).split("+"):
-                for f, v, pu, pv in vals:
-                    lookup[(int(orig), int(f))] = (v, pu, pv)
-        speed = np.full(n, np.nan)
-        for k, (t, f) in enumerate(zip(raw["track_id"].tolist(), raw["frame"].tolist())):
-            hit = lookup.get((int(t), int(f)))
-            if hit is not None:
-                speed[k], pos[k, 0], pos[k, 1] = hit
-        groups = [cfg.group_of(c) for c in raw["class"]]
-        lo = np.array([g.speed_range[0] if g else 0.0 for g in groups])
-        hi = np.array([g.speed_range[1] if g else 1.0 for g in groups])
-        return pos, speed, lo, hi, "calibrated"
-
-    speed = np.full(n, np.nan)
+    speed = np.full(len(raw), np.nan)
     tid_all = raw["track_id"].to_numpy()
     fr_all = raw["frame"].to_numpy()
-    box_h = (raw["y2"] - raw["y1"]).to_numpy(float)
-    is_person = (raw["class"] == "person").to_numpy()
     order = np.lexsort((fr_all, tid_all))
     for t in np.unique(tid_all):
         m = order[tid_all[order] == t]
         if len(m) < 5 or not np.isfinite(uv[m]).all():
             continue
-        w = min(int(round(fps * 0.5)) | 1, len(m) if len(m) % 2 else len(m) - 1)
+        w = min(int(round(fps * window_s)) | 1, len(m) if len(m) % 2 else len(m) - 1)
         if w < 3:
             continue
         dt = max(float(np.median(np.diff(fr_all[m]))), 1.0) / fps
         for i in (0, 1):
             pos[m, i] = savgol_filter(uv[m, i], w, 2)
-        vx = savgol_filter(uv[m, 0], w, 2, deriv=1, delta=dt)
-        vy = savgol_filter(uv[m, 1], w, 2, deriv=1, delta=dt)
-        spd = np.hypot(vx, vy)
-        if is_person[m].all():
-            # body heights per second -> ~m/s (median box height: robust to partial boxes)
-            spd = spd / max(float(np.median(box_h[m])), 1.0) * PERSON_HEIGHT_M
-        speed[m] = spd
+        speed[m] = np.hypot(savgol_filter(uv[m, 0], w, 2, deriv=1, delta=dt),
+                            savgol_filter(uv[m, 1], w, 2, deriv=1, delta=dt))
+    return pos, speed
+
+
+def trail_samples(raw: pd.DataFrame, cfg: Config, run_dir: Path | None, fps: float,
+                  uv: np.ndarray, window_s: float = 0.4):
+    """Where to draw each raw row (reference-frame px) and its speed colour.
+
+    Trails are always drawn where the video sees the object: its foot point, lightly
+    smoothed in image space, so dots sit on the cars / people and trails do not lag.
+    Only the colour depends on the mode:
+      "calibrated": the smoothed metric speed (m/s) from points.csv; rows removed by
+                    cleaning get NaN (hidden in the clean style, grey in the debug style);
+      "approx":     not calibrated yet; people's on-screen speed converted to ~m/s using
+                    their own box height (~1.7 m tall);
+      "relative":   other classes before calibration: px/s scaled to the 95th percentile.
+    Returns (pos, speed, lo, hi, mode).
+    """
+    n = len(raw)
+    pos, px_speed = _smooth_image_paths(raw, uv, fps, window_s)
+    rd = Path(run_dir) if run_dir else None
+    if rd is not None and (rd / "points.csv").exists() and (rd / "track_summary.csv").exists():
+        pts = pd.read_csv(rd / "points.csv")
+        summ = pd.read_csv(rd / "track_summary.csv")
+        lookup = {}
+        for row in summ.itertuples():
+            tp = pts[pts["track_id"] == row.track_id]
+            sp = dict(zip(tp["frame"].tolist(), tp["speed"].tolist()))
+            for orig in str(row.tracker_ids).split("+"):
+                for f, v in sp.items():
+                    lookup[(int(orig), int(f))] = v
+        speed = np.array([lookup.get((int(t), int(f)), np.nan)
+                          for t, f in zip(raw["track_id"].tolist(), raw["frame"].tolist())])
+        groups = [cfg.group_of(c) for c in raw["class"]]
+        lo = np.array([g.speed_range[0] if g else 0.0 for g in groups])
+        hi = np.array([g.speed_range[1] if g else 1.0 for g in groups])
+        return pos, speed, lo, hi, "calibrated"
+
+    box_h = (raw["y2"] - raw["y1"]).to_numpy(float)
+    is_person = (raw["class"] == "person").to_numpy()
     if is_person.all():
+        # body heights per second -> ~m/s (median box height per track: robust to partial boxes)
+        med_h = raw.assign(h=box_h).groupby("track_id")["h"].transform("median").to_numpy()
+        speed = px_speed / np.maximum(med_h, 1.0) * PERSON_HEIGHT_M
         g = cfg.group_of("person")
         rng = g.speed_range if g else (0.0, 2.5)
         return pos, speed, np.full(n, rng[0]), np.full(n, rng[1]), "approx"
-    ok = np.isfinite(speed) & ~raw["predicted"].to_numpy(bool)
-    top = float(np.nanpercentile(speed[ok], 95)) if ok.any() else 1.0
-    return pos, speed, np.zeros(n), np.full(n, max(top, 1e-6)), "relative"
+    ok = np.isfinite(px_speed) & ~raw["predicted"].to_numpy(bool)
+    top = float(np.nanpercentile(px_speed[ok], 95)) if ok.any() else 1.0
+    return pos, px_speed, np.zeros(n), np.full(n, max(top, 1e-6)), "relative"
 
 
 def _bgr(speed, lo, hi):
@@ -183,7 +178,7 @@ def _box_in_ref(r, H):
 
 def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Path,
                        fps: float, roi=None, log=print, max_width: int = 1920,
-                       run_dir: Path | None = None) -> None:
+                       run_dir: Path | None = None, clean_path: Path | None = None) -> None:
     """Render the overlay video.
 
     style "clean" (default): only the tracks that survive cleaning, as speed-coloured trails
@@ -191,6 +186,7 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     style "boxes": everything the tracker saw, with boxes, IDs and rejected tracks in grey.
     With a camera-motion registration the output itself is aligned to the calibration
     frame (`stabilize_output`), so the picture and the trails stay still.
+    clean_path also writes the same video without the clock and legend.
     """
     from tqdm import tqdm
 
@@ -244,7 +240,10 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     scale = min(1.0, max_width / max(W, H))
     size = (int(W * scale), int(H * scale))
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    from .video import VideoSink
+
+    writer = VideoSink(out_path, fps, size)
+    clean_writer = VideoSink(clean_path, fps, size) if clean_path else None
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     th = max(1, int(round(2 * max(W, H) / 1920)))
     # every blur needs the unfiltered detections, even in the clean style
@@ -340,6 +339,9 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
                 cv2.putText(img, f"{int(r.track_id)}" + (" pred" if r.predicted else ""),
                             (p1[0], max(p1[1] - 4, 12)), cv2.FONT_HERSHEY_SIMPLEX,
                             0.4 * th, box_col, max(1, th // 2), cv2.LINE_AA)
+        if clean_writer is not None:
+            clean_writer.write(img if scale >= 1 else
+                               cv2.resize(img, size, interpolation=cv2.INTER_AREA))
         cv2.putText(img, f"t = {f / fps:6.2f} s", (10 * th, 18 * th), cv2.FONT_HERSHEY_SIMPLEX,
                     0.6 * th, (255, 255, 255), max(1, th // 2), cv2.LINE_AA)
         _legend(img, mode, cfg, th)
@@ -347,6 +349,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
             img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
         writer.write(img)
     writer.release()
+    if clean_writer is not None:
+        clean_writer.release()
     cap.release()
     log(f"overlay video -> {out_path} (style {style}"
         + (", people blurred" if blur else "") + (", stabilized" if stable else "")

@@ -46,11 +46,15 @@ class FrameRegistrar:
     chained flow gives the fast motion, the reference matches correct the slow drift.
     """
 
-    def __init__(self, reference_bgr: np.ndarray, n_features: int = 3000):
+    def __init__(self, reference_bgr: np.ndarray, n_features: int = 2000, abs_every: int = 5):
         self.scale = min(1.0, WORK_WIDTH / reference_bgr.shape[1])
         self.h, self.w = reference_bgr.shape[:2]
         self.orb = cv2.ORB_create(n_features, fastThreshold=10)
-        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+        # approximate (LSH) matching: ~10x faster than brute force for binary ORB descriptors
+        self.matcher = cv2.FlannBasedMatcher(
+            dict(algorithm=6, table_number=6, key_size=12, multi_probe_level=1), dict(checks=64))
+        self.abs_every = max(1, int(abs_every))
+        self.k = 0
         g = self._gray(reference_bgr)
         self.ref_kp, self.ref_des = self.orb.detectAndCompute(g, None)
         if self.ref_des is None or len(self.ref_kp) < 100:
@@ -76,7 +80,7 @@ class FrameRegistrar:
         if des is None or len(kp) < MIN_INLIERS:
             return None, 0
         pairs = self.matcher.knnMatch(des, self.ref_des, k=2)
-        good = [m for m, *rest in pairs if rest and m.distance < 0.8 * rest[0].distance]
+        good = [pr[0] for pr in pairs if len(pr) == 2 and pr[0].distance < 0.8 * pr[1].distance]
         if len(good) < MIN_INLIERS:
             return None, 0
         src = np.float32([kp[m.queryIdx].pt for m in good])
@@ -113,11 +117,15 @@ class FrameRegistrar:
         """
         g = self._gray(frame_bgr)
         mask = _box_mask(g.shape, boxes, self.scale)
-        A, n_in = self._absolute(g, mask)
-        self.relative.append(self._relative(g, mask))
+        R = self._relative(g, mask)
+        self.relative.append(R)
+        # the (slower) match against the reference only every `abs_every` frames: the flow
+        # chain covers the frames in between and finalize() interpolates the drift correction
+        A, n_in = (self._absolute(g, mask) if self.k % self.abs_every == 0 else (None, 0))
+        self.k += 1
         self.abs_ok.append(A is not None)
         if A is None:
-            A = self.last
+            A = self.last @ R if R is not None else self.last
         self.last = A
         self.absolute.append(A)
         self.inliers.append(n_in)
@@ -187,3 +195,19 @@ def drift_px(H: np.ndarray, w: int, h: int) -> float:
     """Largest displacement of the frame corners/centre under H (how far the camera moved)."""
     c = np.float32([[0, 0], [w, 0], [w, h], [0, h], [w / 2, h / 2]]).reshape(-1, 1, 2)
     return float(np.linalg.norm(cv2.perspectiveTransform(c, H) - c, axis=2).max())
+
+
+def measure_camera_motion(video, reference_frame: int = 0, samples: int = 8) -> float:
+    """Largest displacement (px) of the frame corners from the reference frame, sampled over
+    the clip: a quick check whether stabilisation is needed at all."""
+    from .video import read_frame, video_info
+
+    info = video_info(video)
+    reg = FrameRegistrar(read_frame(video, reference_frame), abs_every=1)
+    worst = 0.0
+    for f in np.linspace(0, max(info.n_frames - 2, 0), samples).astype(int):
+        reg.prev_gray = None                      # independent samples: no flow chain
+        H, n = reg._absolute(reg._gray(read_frame(video, int(f))), None)
+        if H is not None:
+            worst = max(worst, drift_px(H, info.width, info.height))
+    return worst

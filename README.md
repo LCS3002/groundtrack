@@ -22,8 +22,12 @@ GeoTIFF ─► 2 CALIBRATE (once per site) ──► homography.json   (6–8 cl
           5 EXPORTS             points.csv · tracks.geojson · field_grid.csv · stats.json/csv
                 │               vector_field.csv · houdini_import.py · houdini_field.py
           6 VISUALS             topdown.png/.mp4 · flow_field.png · density.png
-                                speed_histogram.png · (debug.mp4 overlay)
+                │               speed_histogram.png · flowfield.mp4 · (debug.mp4 overlay)
+          7 PACKAGE             package/images: frameless images + videos, nothing around them
+                                package/labels: legends, scale bar, north arrow, metrics
 ```
+
+Everything runs from the command line or from a small local web page (`groundtrack ui`, §4).
 
 ---
 
@@ -158,6 +162,17 @@ plaza, this was the difference between calibrations that would not converge and 
 `calibrate` also writes `<name>_check_video.jpg`: the map projected into your video, which is
 the most readable check for oblique views.
 
+**Don't know the coordinates?** Look the place up on OpenStreetMap:
+
+```powershell
+groundtrack locate "Urbanest Canary Wharf" --floor 43 -c sites/motorway.yaml           # shows it
+groundtrack locate "Urbanest Canary Wharf" --floor 43 -c sites/motorway.yaml --write   # saves it
+```
+
+It takes the building's centre, sets the tolerance to half its size (you may have stood anywhere
+in it) and the height to floor × 3.1 m + 1.5 m (`--height 4` to give it directly). Only the search
+text is sent to OpenStreetMap. The same search is in the UI.
+
 ### 3.4 Pick the points
 
 ```powershell
@@ -256,6 +271,17 @@ re-calibrate on a different frame, re-run `track`.
 ---
 
 ## 4. Running both sites
+
+**Prefer buttons?** `groundtrack ui` opens a local page in your browser (served from this
+computer only, nothing is uploaded). Pick a site, look up where you stood, open the point picker,
+start a run and watch its log, then browse every result: frameless images, label PNGs, metrics,
+videos and data, each with a download link. Every button runs the same command as below.
+
+```powershell
+groundtrack ui                      # from the project folder (the one with sites/ and runs/)
+```
+
+From the command line:
 
 ```powershell
 groundtrack run --config sites/plaza.yaml
@@ -358,6 +384,9 @@ separate lines for QGIS. `field_grid.csv` and `density.png` leave them out by de
 | `debug.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` shows the full debug view (boxes, IDs, rejected tracks in grey), `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
 | `raw_tracks.csv` | the tracker output in pixels (`bbox`, `confidence`, `predicted`) |
 | `config_used.yaml`, `homography_used.json`, `run_log.txt` | provenance |
+| `package/images/` | **pure images**, nothing around the data (no title, frame, axes, legend or scale bar): `insitu_frame`, `insitu_tracks`, `plan_aerial`, `plan_map`, `plan_tracks`, `plan_flowfield`, `plan_density`; `layers/` holds the trails, flow and density alone on transparency; `topdown.mp4`, `flowfield.mp4` and `overlay.mp4` without any labels. All `plan_*` images and layers share one extent and size, so they stack exactly |
+| `package/labels/` | the parts that were left out, separately: `legend_speed`, `legend_density`, `scale_bar` (drawn at the plan images' pixel scale: scale them together), `north_arrow`, each as `_light` (for dark backgrounds) and `_dark`, on transparency; `metrics.csv` (key figures), `metrics.json` (figures, all stats, the plan extent in EPSG:27700 and its pixel scale), `track_metrics.csv` (per track), `title.txt` |
+| `package/*/00_complete.png` | the complete plate (in situ + plan, figures, legend), in both folders. Text from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Rebuild with `groundtrack package -c ... --run ...` |
 
 **QGIS:** drag `tracks.geojson` in; it carries its CRS. For `points.csv` or `field_grid.csv`, use
 *Layer → Add Delimited Text Layer*, with X = `x` / `cell_x`, Y = `y` / `cell_y`, CRS EPSG:27700.
@@ -393,11 +422,16 @@ symbology with `mean_vx` / `mean_vy`.
 Every run also writes a **smoothed top-down vector field**:
 
 * `vector_field.csv`: one row per grid cell (`field.cell_size_m`, aligned to British National
-  Grid) with `vx, vy, speed, heading, density, weight, confidence`. It's a kernel-weighted
-  average of the measured velocities (Gaussian, `field.smooth_m`). Speeds stay real, and the
-  field fades out where there's no data instead of inventing motion there. With several
-  groups you also get `vector_field_<group>.csv`, so cyclists don't speed up the pedestrian
-  field.
+  Grid) with `vx, vy, speed, heading, density, weight, confidence, dominance`. It's a
+  kernel-weighted average of the measured velocities (Gaussian, `field.smooth_m`). Speeds stay
+  real, and the field fades out where there's no data instead of inventing motion there. With
+  several groups you also get `vector_field_<group>.csv`, so cyclists don't speed up the
+  pedestrian field.
+* **Direction-aware.** Each cell follows its *dominant* direction (`field.direction_bins: 8`
+  heading sectors). A plain average would cancel two opposite streams close together (two
+  carriageways, a two-way footpath) into a slow band between them; on the motorway clips that
+  band covered 12 % of the field, now 4 %. `dominance` says how one-way a cell is (1 = all in
+  one direction, ~0.5 = two equal opposite streams). `direction_bins: 0` gives the plain average.
 * `vector_field_slices.csv`: the same field per `field.time_window_s` window (motorway default
   10 s), to animate traffic pulses.
 * `flow_field.png`: streamlines of the field over the map; colour = speed, line width = how
@@ -471,6 +505,14 @@ RMS. Real footage will be worse; that's what this check is for.
   speeds and breaks tracks. Set `projection: max_range_m` (for example 30–40 m on a plaza) to
   only measure where the geometry is good. On a real plaza clip this brought the median walking
   speed from an implausible 1.8 m/s down to 1.2 m/s, and cut impossible jumps by 90 %.
+  `max_range_m: auto` (the template default) works it out per group from the calibrated camera:
+  people are kept while one pixel is under 0.25 m of depth, cycles 0.4 m, vehicles 1 m.
+* **People check.** Every walking person is a measuring stick. Each run computes how tall the
+  detected people would have to be under the calibration, writes it to `stats.json`
+  (`calibration_check`) and logs it. About 1.7 m means the calibration is consistent. A large
+  error from a high camera points at the zoom or the tilt. From eye height, it mostly reflects
+  the camera height and can be off while the ground positions are still fine (the click error is
+  the better measure there).
 * **Flat ground.** A homography maps one plane. Steps, ramps or a cambered road put objects off
   that plane, and they get projected as if they were on it. For a stepped plaza, calibrate on the
   main level and only use points on that level (or set the ROI to it).
@@ -548,9 +590,15 @@ pytest -m "not e2e"    # unit tests only (~2 s)
 * `test_exports.py`: grid aggregation and alignment, GeoJSON validity (including reading it with
   GDAL), the predicted-gap GeoJSON, count-line directions, the stats table. The Houdini script is
   run against a stub `hou` module.
+* `test_field.py`: the vector field keeps speeds, keeps opposite lanes apart (also when they are
+  closer than the kernel), density units, time slices, the Houdini field script.
+* `test_selfcal.py`: the people-height check on a synthetic camera, `max_range_m: auto`.
+* `test_ui.py`: the local UI only accepts its own configs, files inside the project, known
+  commands and safe run names; it refuses other hostnames and cross-site posts; the camera
+  position is written into the config without touching the rest.
 * `test_e2e.py`: generates the demo video, runs calibration, YOLO, tracking and all exports, then
-  checks positions (within 25 cm), speeds (within 6 %), the occlusion bridging, and the
-  `groundtruth` command.
+  checks positions (within 25 cm), speeds (within 6 %), the occlusion bridging, the package (every
+  plan image and layer stacks, the metrics) and the `groundtruth` command.
 
 ---
 
