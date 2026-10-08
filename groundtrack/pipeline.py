@@ -15,6 +15,7 @@ from . import exports, visuals
 from .config import Config
 from .geo import load_geotiff
 from .homography import Homography
+from .layout import Run, open_run
 from .lens import Lens
 from .trajectories import assign_track_classes, process_tracks
 from .video import video_info
@@ -34,7 +35,7 @@ class RunLog:
 def new_run_dir(cfg: Config, name: str | None = None) -> Path:
     root = cfg.path("output_dir") or (cfg.base_dir / "runs")
     d = root / cfg.site / (name or datetime.now().strftime("%Y%m%d-%H%M%S"))
-    d.mkdir(parents=True, exist_ok=True)
+    Run(d).make()
     return d
 
 
@@ -61,7 +62,7 @@ def load_calibration(cfg: Config, video: Path | None = None) -> tuple[Homography
 
 def load_run_registration(run_dir: Path, h: Homography, log=print) -> dict | None:
     """Per-frame camera-motion registration of a run, if it was tracked with stabilize."""
-    p = Path(run_dir) / "registration.npz"
+    p = open_run(run_dir).registration
     if not p.exists():
         return None
     from .registration import load_registration
@@ -80,22 +81,23 @@ def stage_track(cfg: Config, run_dir: Path, device: str, log=print,
     from .detect import run_tracking
 
     video = video or _require(cfg.path("video"), "video")
-    return run_tracking(cfg, video, run_dir / "raw_tracks.csv", device, log=log,
+    return run_tracking(cfg, video, Run(run_dir).make().raw_tracks, device, log=log,
                         max_frames=max_frames)
 
 
 def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | None = None,
                   video: Path | None = None) -> dict:
     t0 = time.time()
-    run_dir = Path(run_dir)
-    meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
+    run = open_run(run_dir).make()
+    run_dir = run.root
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
     if raw is None:
-        raw = pd.read_csv(run_dir / "raw_tracks.csv")
+        raw = pd.read_csv(run.raw_tracks)
     video = video or Path(meta["video"])
     h, lens = load_calibration(cfg, video if video.exists() else None)
     # keep the run's calibration snapshot in sync with the one these results are made with
     # (the overlay video projects the results back into the footage with it)
-    shutil.copy2(cfg.path("homography"), run_dir / "homography_used.json")
+    shutil.copy2(cfg.path("homography"), run.homography_used)
     fps, stride = float(meta["fps"]), int(meta["vid_stride"])
 
     reg = load_run_registration(run_dir, h, log)
@@ -105,79 +107,80 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         f"({int(points['predicted'].sum()) if len(points) else 0} predicted/interpolated)")
 
     out = {}
-    out["points"] = run_dir / "points.csv"
+    out["points"] = run.points
     exports.write_points_csv(points, out["points"])
-    out["track_summary"] = run_dir / "track_summary.csv"
-    summary.to_csv(out["track_summary"], index=False)
-    out["tracks_geojson"] = run_dir / "tracks.geojson"
+    shutil.copy2(run.points, run.houdini / "points.csv")      # houdini/ is self-contained
+    out["track_metrics"] = run.tracks
+    summary.to_csv(out["track_metrics"], index=False)
+    out["tracks_geojson"] = run.data / "tracks.geojson"
     exports.write_geojson(exports.tracks_geojson(points, summary), out["tracks_geojson"])
-    out["gaps_geojson"] = run_dir / "predicted_gaps.geojson"
+    out["gaps_geojson"] = run.data / "predicted_gaps.geojson"
     exports.write_geojson(exports.predicted_segments_geojson(points), out["gaps_geojson"])
 
     gcfg = cfg["grid"]
     cell = float(gcfg["cell_size_m"])
-    out["field_grid"] = run_dir / "field_grid.csv"
+    out["field_grid"] = run.data / "field_grid.csv"
     exports.field_grid(points, cell, gcfg["include_predicted"]).to_csv(out["field_grid"],
                                                                        index=False)
     present = sorted(set(points["group"])) if len(points) else []
     if len(present) > 1:
         for gname in present:
-            p = run_dir / f"field_grid_{gname}.csv"
+            p = run.data / f"field_grid_{gname}.csv"
             exports.field_grid(points[points["group"] == gname], cell,
                                gcfg["include_predicted"]).to_csv(p, index=False)
 
-    out.update(_export_field(cfg, run_dir, points, h, stride / fps))
+    out.update(_export_field(cfg, run, points, h, stride / fps))
 
     window = (meta["start_frame"] / fps, meta["end_frame"] / fps)
     stats = exports.compute_stats(points, summary, cfg, window)
     check = _people_height_check(cfg, raw, h, reg, log)
     if check:
         stats["calibration_check"] = check
-    out["stats_json"] = run_dir / "stats.json"
+    out["stats_json"] = run.stats_json
     out["stats_json"].write_text(json.dumps(stats, indent=2), encoding="utf-8")
-    out["stats_csv"] = run_dir / "stats.csv"
+    out["stats_csv"] = run.stats_csv
     exports.stats_table(stats).to_csv(out["stats_csv"], index=False)
 
-    out["houdini"] = run_dir / "houdini_import.py"
-    exports.write_houdini_script(out["houdini"], out["points"], h.origin, cfg)
+    out["houdini"] = run.houdini / "houdini_import.py"
+    exports.write_houdini_script(out["houdini"], run.houdini / "points.csv", h.origin, cfg)
 
     log("rendering visuals ...")
     raster = None
     if cfg.get("geotiff"):
         raster = load_geotiff(_require(cfg.path("geotiff"), "geotiff"), max_dim=8000, warn=log)
     title = f"{cfg.site} · {Path(meta['video']).name}"
-    out["topdown"] = run_dir / "topdown.png"
+    out["topdown"] = run.extras / "topdown.png"
     visuals.plot_topdown(points, raster, cfg, out["topdown"], title)
-    out["density"] = run_dir / "density.png"
+    out["density"] = run.extras / "density.png"
     visuals.plot_density(points, raster, cfg, out["density"], dt=stride / fps)
-    out["speed_histogram"] = run_dir / "speed_histogram.png"
+    out["speed_histogram"] = run.extras / "speed_histogram.png"
     visuals.plot_speed_histogram(summary, cfg, out["speed_histogram"])
-    for gname, (fpath, label, rng) in _field_plots(cfg, run_dir, points).items():
+    for gname, (fpath, label, rng) in _field_plots(cfg, run, points).items():
         field = pd.read_csv(fpath)
         sel = points if gname == "all" else points[points["group"] == gname]
-        png = run_dir / ("flow_field.png" if gname == "all" else f"flow_field_{gname}.png")
+        png = run.extras / ("flow_field.png" if gname == "all" else f"flow_field_{gname}.png")
         visuals.plot_flow_field(field, sel, raster, cfg, png, float(cfg["field"]["cell_size_m"]),
                                 rng, label)
         out[png.stem] = png
-    pkg = _package_dir(cfg, run_dir)
+    clean = _clean_videos(cfg)
     if cfg["visuals"].get("topdown_video", True) and len(points):
         from .animation import render_topdown_video
 
-        out["topdown_video"] = run_dir / "topdown.mp4"
+        out["topdown_video"] = run.videos / "topdown.mp4"
         render_topdown_video(points, raster, cfg, out["topdown_video"], fps / stride,
                              visuals._extent(points, raster, cfg),
                              speedup=float(cfg["visuals"].get("topdown_video_speedup", 1.0)),
-                             log=log, clean_path=pkg and pkg / "topdown.mp4")
+                             log=log, clean_path=clean and run.videos / "topdown_clean.mp4")
     if cfg["visuals"].get("flowfield_video", True) and len(points):
         from .animation import render_flowfield_video
 
         gname = sorted(set(points["group"]))[0]
-        out["flowfield_video"] = run_dir / "flowfield.mp4"
-        render_flowfield_video(pd.read_csv(run_dir / "vector_field.csv"), points, raster, cfg,
+        out["flowfield_video"] = run.videos / "flowfield.mp4"
+        render_flowfield_video(pd.read_csv(run.field_csv()), points, raster, cfg,
                                out["flowfield_video"], visuals._extent(points, raster, cfg),
                                float(cfg["field"]["cell_size_m"]),
                                cfg.groups[gname].speed_range, log=log,
-                               clean_path=pkg and pkg / "flowfield.mp4")
+                               clean_path=clean and run.videos / "flowfield_clean.mp4")
 
     if cfg["debug_video"].get("enabled"):
         from .debug_video import render_debug_video
@@ -187,33 +190,29 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
             r = raw.copy()
             cls = assign_track_classes(r)
             r["class"] = r["track_id"].map(cls).fillna(r["class"])
-            out["debug_video"] = run_dir / "debug.mp4"
-            render_debug_video(video, r, cfg, out["debug_video"], fps,
+            out["overlay_video"] = run.videos / "overlay.mp4"
+            render_debug_video(video, r, cfg, out["overlay_video"], fps,
                                site_roi(cfg), log=log, run_dir=run_dir,
-                               clean_path=pkg and pkg / "overlay.mp4")
+                               clean_path=clean and run.videos / "overlay_clean.mp4")
         else:
             log(f"debug video skipped: {video} not found")
 
-    if pkg and len(points):
+    if clean and len(points):
         from .package import build_package
 
         try:
-            out["package"] = build_package(cfg, run_dir, raster, video, log=log)
+            build_package(cfg, run_dir, raster, video, log=log)
         except Exception as e:  # never lose a finished run over the presentation layer
-            log(f"package failed: {e!r} (re-try with `groundtrack package`)")
+            log(f"images / labels failed: {e!r} (re-try with `groundtrack package`)")
 
     _log_stats(stats, log)
     log(f"processing took {time.time() - t0:.1f} s. Outputs in {run_dir}")
     return out
 
 
-def _package_dir(cfg: Config, run_dir: Path) -> Path | None:
-    """package/images (created) when packages are on, else None."""
-    if not (cfg.get("package") or {}).get("enabled", True):
-        return None
-    d = Path(run_dir) / "package" / "images"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _clean_videos(cfg: Config) -> bool:
+    """Frameless outputs (images/, labels/, *_clean.mp4) are on unless package.enabled: false."""
+    return bool((cfg.get("package") or {}).get("enabled", True))
 
 
 def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:
@@ -245,7 +244,7 @@ def _field_groups(points: pd.DataFrame) -> list[str]:
     return ["all"] + (present if len(present) > 1 else [])
 
 
-def _export_field(cfg: Config, run_dir: Path, points: pd.DataFrame, h: Homography,
+def _export_field(cfg: Config, run: Run, points: pd.DataFrame, h: Homography,
                   dt: float) -> dict:
     """vector_field*.csv (+ time slices) and houdini_field.py."""
     from .field import smooth_field, time_sliced_fields
@@ -259,22 +258,22 @@ def _export_field(cfg: Config, run_dir: Path, points: pd.DataFrame, h: Homograph
     for gname in _field_groups(points):
         sel = points if gname == "all" else points[points["group"] == gname]
         suffix = "" if gname == "all" else f"_{gname}"
-        p = run_dir / f"vector_field{suffix}.csv"
+        p = run.houdini / f"vector_field{suffix}.csv"
         smooth_field(sel, cell, smooth, dt, **kw).to_csv(p, index=False)
         files[gname] = p
         out[p.stem] = p
         if fc.get("time_window_s"):
-            ps = run_dir / f"vector_field_slices{suffix}.csv"
+            ps = run.houdini / f"vector_field_slices{suffix}.csv"
             time_sliced_fields(sel, float(fc["time_window_s"]), cell, smooth, dt, **kw)                 .to_csv(ps, index=False)
             slices[gname] = ps
             out[ps.stem] = ps
-    out["houdini_field"] = run_dir / "houdini_field.py"
+    out["houdini_field"] = run.houdini / "houdini_field.py"
     exports.write_houdini_field_script(out["houdini_field"], files, slices,
-                                       run_dir / "points.csv", h.origin, cell, cfg)
+                                       run.houdini / "points.csv", h.origin, cell, cfg)
     return out
 
 
-def _field_plots(cfg: Config, run_dir: Path, points: pd.DataFrame) -> dict:
+def _field_plots(cfg: Config, run: Run, points: pd.DataFrame) -> dict:
     """group -> (field csv, label, speed range) for the flow-field PNGs."""
     from .visuals import GROUP_LABELS
 
@@ -285,8 +284,7 @@ def _field_plots(cfg: Config, run_dir: Path, points: pd.DataFrame) -> dict:
             continue  # mixed speeds (people + cycles) would share one colour scale: skip
         g = gname if gname != "all" else (sorted(set(points["group"]))[0] if len(points)
                                           else next(iter(cfg.groups)))
-        suffix = "" if gname == "all" else f"_{gname}"
-        res[gname] = (run_dir / f"vector_field{suffix}.csv", GROUP_LABELS.get(g, g),
+        res[gname] = (run.field_csv(gname), GROUP_LABELS.get(g, g),
                       cfg.groups[g].speed_range)
     return res
 
@@ -302,17 +300,18 @@ def _log_stats(stats: dict, log) -> None:
 
 
 def snapshot_inputs(cfg: Config, run_dir: Path) -> None:
-    (run_dir / "config_used.yaml").write_text(
+    run = Run(run_dir).make()
+    run.config_used.write_text(
         yaml.safe_dump(cfg.data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     hp = cfg.path("homography")
     if hp and hp.exists():
-        shutil.copy2(hp, run_dir / "homography_used.json")
+        shutil.copy2(hp, run.homography_used)
 
 
 def run_all(cfg: Config, device: str, run_name: str | None = None,
             max_frames: int | None = None) -> Path:
     run_dir = new_run_dir(cfg, run_name)
-    log = RunLog(run_dir / "run_log.txt")
+    log = RunLog(Run(run_dir).log)
     log(f"run folder: {run_dir}")
     snapshot_inputs(cfg, run_dir)
     video = _require(cfg.path("video"), "video")

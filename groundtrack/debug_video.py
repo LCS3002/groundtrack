@@ -18,6 +18,7 @@ import pandas as pd
 
 from .colors import ramp_rgb
 from .config import Config
+from .layout import open_run
 
 GROUP_BGR = {"people": (255, 200, 0), "cycles": (0, 220, 120), "vehicles": (60, 80, 255)}
 
@@ -92,9 +93,10 @@ def trail_samples(raw: pd.DataFrame, cfg: Config, run_dir: Path | None, fps: flo
     n = len(raw)
     pos, px_speed = _smooth_image_paths(raw, uv, fps, window_s)
     rd = Path(run_dir) if run_dir else None
-    if rd is not None and (rd / "points.csv").exists() and (rd / "track_summary.csv").exists():
-        pts = pd.read_csv(rd / "points.csv")
-        summ = pd.read_csv(rd / "track_summary.csv")
+    run = open_run(rd) if rd is not None else None
+    if run is not None and run.points.exists() and run.tracks.exists():
+        pts = pd.read_csv(run.points)
+        summ = pd.read_csv(run.tracks)
         lookup = {}
         for row in summ.itertuples():
             tp = pts[pts["track_id"] == row.track_id]
@@ -205,8 +207,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     raw = raw.sort_values(["frame", "track_id"]).reset_index(drop=True)
 
     reg = None
-    if run_dir is not None and (Path(run_dir) / "registration.npz").exists():
-        reg, ref_frame, _ = load_registration(Path(run_dir) / "registration.npz")
+    if run_dir is not None and open_run(run_dir).registration.exists():
+        reg, ref_frame, _ = load_registration(open_run(run_dir).registration)
     stable = reg is not None and bool(dv.get("stabilize_output", True))
     ref_img = None
     if stable:
@@ -359,8 +361,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
 
 def raw_all_people(run_dir, fallback: pd.DataFrame) -> pd.DataFrame:
     """Every person box of the run (incl. those the clean style hides), for blurring."""
-    if run_dir is not None and (Path(run_dir) / "raw_tracks.csv").exists():
-        r = pd.read_csv(Path(run_dir) / "raw_tracks.csv")
+    if run_dir is not None and open_run(run_dir).raw_tracks.exists():
+        r = pd.read_csv(open_run(run_dir).raw_tracks)
     else:
         r = fallback
     return r[r["class"] == "person"]

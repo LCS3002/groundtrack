@@ -28,6 +28,8 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
+from .layout import Run, open_run
+
 HTML = Path(__file__).with_name("ui.html")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 IMG_EXT = {".png", ".jpg", ".jpeg"}
@@ -160,7 +162,7 @@ class App:
                 item["calibrated"] = bool(cfg.path("homography") and cfg.path("homography").exists())
                 item["camera"] = bool(cfg.get("camera_position"))
                 rd = _run_root(cfg)
-                item["runs"] = len([p for p in rd.glob("*") if (p / "raw_tracks.csv").exists()]) \
+                item["runs"] = len([p for p in rd.glob("*") if Run(p).is_run()]) \
                     if rd.exists() else 0
             except Exception as e:
                 item["error"] = str(e)
@@ -218,12 +220,12 @@ class App:
             return []
         out = []
         for p in sorted(rd.glob("*"), key=lambda q: q.stat().st_mtime, reverse=True):
-            if not (p / "raw_tracks.csv").exists():
+            if not Run(p).is_run():
                 continue
-            r = {"name": p.name, "path": str(p), "processed": (p / "points.csv").exists(),
-                 "package": (p / "package" / "labels" / "metrics.csv").exists(),
-                 "mtime": p.stat().st_mtime}
-            sj = p / "stats.json"
+            run = open_run(p)
+            r = {"name": p.name, "path": str(p), "processed": run.processed(),
+                 "images": run.metrics_csv.exists(), "mtime": p.stat().st_mtime}
+            sj = run.stats_json
             if sj.exists():
                 try:
                     s = json.loads(sj.read_text(encoding="utf-8"))
@@ -236,35 +238,32 @@ class App:
 
     def run_detail(self, rel: str, run: str) -> dict:
         cfg = _load(self.resolve_config(rel))
-        rd = self._run_dir(cfg, run)
-        pkg = rd / "package"
-        d = {"name": rd.name, "path": str(rd)}
+        r = open_run(self._run_dir(cfg, run))
+        d = {"name": r.root.name, "path": str(r.root)}
 
-        def files(folder: Path, exts) -> list[str]:
-            return [str(q) for q in sorted(folder.glob("*")) if q.suffix.lower() in exts] \
-                if folder.exists() else []
+        def files(folder: Path, exts=None) -> list[str]:
+            return [str(q) for q in sorted(folder.glob("*")) if q.is_file()
+                    and (exts is None or q.suffix.lower() in exts)] if folder.exists() else []
 
-        d["images"] = files(pkg / "images", IMG_EXT)
-        d["layers"] = files(pkg / "images" / "layers", IMG_EXT)
-        d["labels"] = files(pkg / "labels", IMG_EXT)
-        d["label_data"] = [str(q) for q in sorted((pkg / "labels").glob("*"))
-                           if q.suffix.lower() in {".csv", ".json", ".txt"}] \
-            if (pkg / "labels").exists() else []
-        d["videos"] = files(pkg / "images", VID_EXT) + files(rd, VID_EXT)
-        d["maps"] = files(rd, IMG_EXT)
-        d["data"] = [str(q) for q in sorted(rd.glob("*"))
-                     if q.suffix.lower() in {".csv", ".geojson", ".json", ".py"}]
-        mc = pkg / "labels" / "metrics.csv"
-        if mc.exists():
+        plate = r.plate(cfg.site)
+        d["plate"] = str(plate) if plate.exists() else None
+        imgs = files(r.images, IMG_EXT)
+        d["images"] = [q for q in imgs if not q.endswith("_layer.png")]
+        d["layers"] = [q for q in imgs if q.endswith("_layer.png")]
+        d["labels"] = files(r.labels, IMG_EXT)
+        d["videos"] = files(r.videos, VID_EXT)
+        d["extras"] = files(r.extras, IMG_EXT)
+        d["data"] = files(r.data) + files(r.labels, {".txt"})
+        d["houdini"] = files(r.houdini)
+        if r.metrics_csv.exists():
             import csv
 
-            with open(mc, encoding="utf-8") as fh:
+            with open(r.metrics_csv, encoding="utf-8") as fh:
                 d["metrics"] = list(csv.DictReader(fh))
-        sj = rd / "stats.json"
-        if sj.exists():
-            s = json.loads(sj.read_text(encoding="utf-8"))
+        if r.stats_json.exists():
+            s = json.loads(r.stats_json.read_text(encoding="utf-8"))
             d["check"] = s.get("calibration_check")
-        log = rd / "run_log.txt"
+        log = r.log
         if log.exists():
             d["log_tail"] = log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
         return d

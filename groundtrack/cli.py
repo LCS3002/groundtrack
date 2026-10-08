@@ -26,14 +26,16 @@ def _device(cfg, log=print):
 
 def _run_dir_arg(cfg, run: str | None) -> Path:
     """--run accepts a folder path, a run name, or 'latest'."""
+    from .layout import Run, open_run
+
     root = (cfg.path("output_dir") or cfg.base_dir / "runs") / cfg.site
     if run in (None, "latest"):
-        runs = sorted(p for p in root.glob("*") if (p / "raw_tracks.csv").exists())
+        runs = sorted(p for p in root.glob("*") if Run(p).is_run())
         if not runs:
-            raise SystemExit(f"No runs with raw_tracks.csv under {root}")
-        return runs[-1]
+            raise SystemExit(f"No tracked runs under {root}")
+        return open_run(runs[-1]).root
     p = Path(run)
-    return p if p.exists() else root / run
+    return open_run(p if p.exists() else root / run).root
 
 
 # --------------------------------------------------------------------------- commands
@@ -118,11 +120,12 @@ def cmd_roi(args):
 
 
 def cmd_track(args):
+    from .layout import Run
     from .pipeline import RunLog, load_calibration, new_run_dir, snapshot_inputs, stage_track
 
     cfg = _cfg(args)
     run_dir = new_run_dir(cfg, args.run_name)
-    log = RunLog(run_dir / "run_log.txt")
+    log = RunLog(Run(run_dir).log)
     snapshot_inputs(cfg, run_dir)
     if cfg.get("homography") and cfg.path("homography").exists():
         load_calibration(cfg, cfg.path("video"))
@@ -131,12 +134,13 @@ def cmd_track(args):
 
 
 def cmd_process(args):
+    from .layout import Run
     from .pipeline import RunLog, stage_process
 
     ov = {"debug_video": {"enabled": True}} if args.debug_video else {}
     cfg = _cfg(args, ov)
     run_dir = _run_dir_arg(cfg, args.run)
-    stage_process(cfg, run_dir, log=RunLog(run_dir / "run_log.txt"))
+    stage_process(cfg, run_dir, log=RunLog(Run(run_dir).log))
 
 
 def cmd_package(args):
@@ -191,6 +195,7 @@ def cmd_debug_video(args):
 
     from .debug_video import render_debug_video
     from .detect import site_roi
+    from .layout import Run
     from .trajectories import assign_track_classes
 
     dv = {"blur_people": not args.no_blur}
@@ -201,16 +206,16 @@ def cmd_debug_video(args):
     if args.trail_s is not None:
         dv["trail_s"] = args.trail_s
     cfg = _cfg(args, {"debug_video": dv})
-    run_dir = _run_dir_arg(cfg, args.run)
-    meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
-    raw = pd.read_csv(run_dir / "raw_tracks.csv")
+    run = Run(_run_dir_arg(cfg, args.run)).make()
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    raw = pd.read_csv(run.raw_tracks)
     raw["class"] = raw["track_id"].map(assign_track_classes(raw)).fillna(raw["class"])
     clean = None
     if (cfg.get("package") or {}).get("enabled", True) and not args.boxes:
-        clean = run_dir / "package" / "images" / "overlay.mp4"   # the same, without labels
-        clean.parent.mkdir(parents=True, exist_ok=True)
-    render_debug_video(Path(meta["video"]), raw, cfg, run_dir / "debug.mp4", meta["fps"],
-                       site_roi(cfg), run_dir=run_dir, clean_path=clean)
+        clean = run.videos / "overlay_clean.mp4"                 # the same, without labels
+    out = run.videos / ("overlay_boxes.mp4" if args.boxes else "overlay.mp4")
+    render_debug_video(Path(meta["video"]), raw, cfg, out, meta["fps"], site_roi(cfg),
+                       run_dir=run.root, clean_path=clean)
 
 
 def cmd_groundtruth(args):
@@ -218,6 +223,7 @@ def cmd_groundtruth(args):
 
     from .config import load_config
     from .groundtruth import analyse_walk, pick_track, plot_walk, write_report
+    from .layout import Run
     from .pipeline import RunLog, load_calibration, new_run_dir, stage_track
     from .trajectories import process_tracks
 
@@ -230,22 +236,24 @@ def cmd_groundtruth(args):
     video = Path(args.video)
     h, lens = load_calibration(cfg, video)
     run_dir = new_run_dir(cfg, args.run_name or "groundtruth-" + video.stem)
-    log = RunLog(run_dir / "run_log.txt")
+    run = Run(run_dir)
+    log = RunLog(run.log)
     raw = stage_track(cfg, run_dir, _device(cfg, log), log=log, video=video)
-    meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
     from .pipeline import load_run_registration
 
     points, summary = process_tracks(raw, cfg, h, meta["fps"], meta["vid_stride"], lens, log=log,
                                      registration=load_run_registration(run_dir, h, log))
-    points.to_csv(run_dir / "points.csv", index=False)
-    summary.to_csv(run_dir / "track_summary.csv", index=False)
+    points.to_csv(run.points, index=False)
+    summary.to_csv(run.tracks, index=False)
     a = tuple(args.start) if args.start else None
     b = tuple(args.end) if args.end else None
     tr = pick_track(points, summary, args.track_id, a, b)
     rep = analyse_walk(tr, a, b, args.length, args.stopwatch)
-    write_report(rep, run_dir, log)
-    plot_walk(tr, rep, run_dir / "groundtruth.png", a, b)
-    log(f"report: {run_dir / 'groundtruth_report.json'}\nplot:   {run_dir / 'groundtruth.png'}")
+    write_report(rep, run.extras, log)
+    plot_walk(tr, rep, run.extras / "groundtruth.png", a, b)
+    log(f"report: {run.extras / 'groundtruth_report.json'}\n"
+        f"plot:   {run.extras / 'groundtruth.png'}")
 
 
 # --------------------------------------------------------------------------- parser

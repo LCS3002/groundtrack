@@ -1,20 +1,13 @@
-"""Per-run packages: frameless images, separate labels, the metrics and the complete plate.
+"""Frameless images, separate labels, the metrics and the complete plate of a run.
 
-    package/
-      images/   pure images: nothing around the data (no title, frame, axes, legend, scale)
-                00_complete.png       the full plate, for reference
-                insitu_frame.png      mid-clip video frame, people blurred
-                insitu_tracks.png     the same frame, darkened, with every track as light
-                plan_aerial.png       aerial at the plan extent, in colour
-                plan_map.png          the same, darkened (the base of all plan_* images)
-                plan_tracks.png       tracks
-                plan_flowfield.png    streamlines of the smoothed vector field
-                plan_density.png      occupancy (where people / vehicles spend time)
-                layers/*.png          trails, flow and density alone on transparency
-                topdown.mp4, flowfield.mp4, overlay.mp4   videos without labels
-      labels/   00_complete.png, legend_speed, legend_density, scale_bar, north_arrow
-                (each _light for dark backgrounds and _dark for light ones, transparent),
-                metrics.csv, metrics.json, track_metrics.csv, title.txt
+Written into the run folder (see layout.py):
+    <site>_plate.png      the complete plate
+    images/   insitu_frame, insitu_tracks, plan_aerial, plan_map, plan_tracks, plan_flowfield,
+              plan_density: pure images, nothing around the data (no title, frame, axes,
+              legend or scale bar). <name>_layer.png = the drawing alone on transparency.
+    labels/   legend_speed, legend_density, scale_bar, north_arrow (each _light for dark
+              backgrounds and _dark for light ones, transparent), title.txt
+    data/     metrics.csv (key figures), metrics.json (figures + all stats + plan geometry)
 
 Every plan_* image and layer shares one extent and size, so they stack exactly. The scale
 bar is drawn at that pixel scale: scale it together with the plan images.
@@ -24,7 +17,6 @@ from __future__ import annotations
 
 import csv
 import json
-import shutil
 from datetime import date
 from pathlib import Path
 
@@ -36,6 +28,7 @@ from PIL import Image, ImageDraw
 from . import portfolio as pf
 from .config import Config
 from .geo import GeoRaster
+from .layout import open_run
 
 # occupancy ramp: deep blue -> cyan -> white (light on dark)
 DENSITY_STOPS = [(0.0, (22, 48, 110)), (0.55, (38, 182, 218)), (1.0, (244, 250, 255))]
@@ -242,26 +235,23 @@ def plate_text(cfg: Config) -> dict:
 
 def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
                   video: Path | None = None, log=print, plate: bool = True) -> Path:
-    """Write run_dir/package (see module docstring). Returns the package folder."""
-    run_dir = Path(run_dir)
+    """Write the frameless images, labels, metrics and plate (module docstring) of a run."""
+    run = open_run(run_dir).make()
     pk = cfg.get("package") or {}
-    out = run_dir / "package"
-    images, labels, layers = out / "images", out / "labels", out / "images" / "layers"
-    for d in (images, labels, layers):
-        d.mkdir(parents=True, exist_ok=True)
-    meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
-    points = pd.read_csv(run_dir / "points.csv")
-    summary = pd.read_csv(run_dir / "track_summary.csv")
-    stats = json.loads((run_dir / "stats.json").read_text(encoding="utf-8"))
+    images, labels = run.images, run.labels
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    points = pd.read_csv(run.points)
+    summary = pd.read_csv(run.tracks)
+    stats = json.loads(run.stats_json.read_text(encoding="utf-8"))
     if points.empty:
-        log("package: no tracks, nothing to draw")
-        return out
+        log("images / labels: no tracks, nothing to draw")
+        return run.root
     group = summary["group"].mode().iloc[0] if len(summary) else points["group"].iloc[0]
     g = cfg.groups[group]
     fps, stride = float(meta["fps"]), int(meta["vid_stride"])
     hom = {}
-    if (run_dir / "homography_used.json").exists():
-        hom = json.loads((run_dir / "homography_used.json").read_text(encoding="utf-8"))
+    if run.homography_used.exists():
+        hom = json.loads(run.homography_used.read_text(encoding="utf-8"))
     cam = hom.get("camera_params")
     variants = list(pk.get("label_variants") or ["light", "dark"])
 
@@ -276,29 +266,28 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         _save(L["aerial"], images / "plan_aerial.png")
     _save(base, images / "plan_map.png")
     _save(base + L["trails"], images / "plan_tracks.png")
-    _save(_additive_to_rgba(L["trails"]), layers / "plan_trails.png")
-    field_csv = run_dir / (f"vector_field_{group}.csv" if (run_dir / f"vector_field_{group}.csv")
-                           .exists() else "vector_field.csv")
+    _save(_additive_to_rgba(L["trails"]), images / "plan_tracks_layer.png")
+    field_csv = run.field_csv(group) if run.field_csv(group).exists() else run.field_csv()
     if field_csv.exists():
         flow = flow_layer(pd.read_csv(field_csv), ext, (W, H), float(cfg["field"]["cell_size_m"]),
                           g.speed_range, line_px=1.6 * plan_h / 2000)
         _save(base + flow, images / "plan_flowfield.png")
-        _save(_additive_to_rgba(flow), layers / "plan_flowfield.png")
+        _save(_additive_to_rgba(flow), images / "plan_flowfield_layer.png")
     dens, dmax = density_layer(points, ext, (W, H), stride / fps)
     _save(_over(base, dens), images / "plan_density.png")
-    _save(dens, layers / "plan_density.png")
+    _save(dens, images / "plan_density_layer.png")
 
     # ---- in situ (needs the footage)
     video = Path(video or meta.get("video", ""))
     insitu = None
     if video.exists():
-        insitu = pf.insitu_layers(video, run_dir, cfg, fps, int(meta["height"]),
+        insitu = pf.insitu_layers(video, run.root, cfg, fps, int(meta["height"]),
                                   line_px=1.6 * int(meta["height"]) / 1400)
         _save(insitu["frame_rgb"], images / "insitu_frame.png")
         _save(insitu["base"] + insitu["trails"], images / "insitu_tracks.png")
-        _save(_additive_to_rgba(insitu["trails"]), layers / "insitu_trails.png")
+        _save(_additive_to_rgba(insitu["trails"]), images / "insitu_tracks_layer.png")
     else:
-        log(f"package: footage {video} not found, in-situ images skipped")
+        log(f"images: footage {video} not found, in-situ images skipped")
 
     # ---- labels
     lo, hi = g.speed_range
@@ -315,12 +304,11 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
 
     figs = key_figures(stats, summary, group, cam, hom.get("rmse_m"))
-    with open(labels / "metrics.csv", "w", newline="", encoding="utf-8") as f:
+    with open(run.metrics_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value", "unit", "label"])
         for key, label, value, unit in figs:
             w.writerow([key, value, unit, label])
-    shutil.copy2(run_dir / "track_summary.csv", labels / "track_metrics.csv")
     text = plate_text(cfg)
     (labels / "title.txt").write_text(
         "\n".join(x for x in (text["title"] + (f"  {text['index']}" if text["index"] else ""),
@@ -340,13 +328,11 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         "camera": cam,
         "stats": stats,
     }
-    (labels / "metrics.json").write_text(json.dumps(info, indent=2, default=float),
-                                         encoding="utf-8")
+    run.metrics_json.write_text(json.dumps(info, indent=2, default=float), encoding="utf-8")
 
-    # ---- the complete plate, in both packages
+    # ---- the complete plate
     if plate and insitu is not None:
-        p = pf.make_plate(cfg, run_dir, raster, images / "00_complete.png", text["title"],
-                          text["index"], text["subtitle"], text["date"], credit=text["credit"])
-        shutil.copy2(p, labels / "00_complete.png")
-    log(f"package -> {out}  (images: frameless; labels: legends, scale, north, metrics)")
-    return out
+        pf.make_plate(cfg, run.root, raster, run.plate(cfg.site), text["title"], text["index"],
+                      text["subtitle"], text["date"], credit=text["credit"])
+    log(f"images (frameless), labels, metrics and plate -> {run.root}")
+    return run.root

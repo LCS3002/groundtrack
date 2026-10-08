@@ -294,7 +294,7 @@ function renderSite() {
     h("div", { style: "display: flex; gap: 12px; align-items: center; flex-wrap: wrap" },
       h("button", { class: "primary", disabled: !(v.ok && cal.ok), onclick: () => startJob("run", { run_name: rn.value, max_frames: mf.value, debug_video: dv.checked }) }, "Start run"),
       rn, mf, h("label", { for: "dv", style: "font-size: 13px; color: var(--grey)" }, dv, " overlay video (people blurred)")),
-    h("div", { class: "hint" }, "Detect + track, then tracks, vector fields, maps, videos and the package (frameless images, labels, metrics). A test with ~300 frames takes a minute."),
+    h("div", { class: "hint" }, "Detect + track, then the plate, frameless images, labels, videos, data and Houdini files. A test with ~300 frames takes a minute."),
     h("div", { id: "jobView" })));
   renderJobView();
 
@@ -321,46 +321,30 @@ async function renderRuns(box) {
   let d;
   try { d = await api(`/api/run?config=${encodeURIComponent(s.config)}&run=${encodeURIComponent(state.run)}`); }
   catch (e) { det.append(h("div", { class: "err" }, e.message)); return; }
-  const actions = h("div", { style: "display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 26px" },
+  det.append(h("div", { style: "display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 26px" },
     h("button", { onclick: () => startJob("process", {}, state.run) }, "Re-process"),
-    h("button", { onclick: () => startJob("package", {}, state.run) }, "Rebuild package"),
+    h("button", { onclick: () => startJob("package", {}, state.run) }, "Redraw images + plate"),
     h("button", { onclick: () => startJob("debug-video", {}, state.run) }, "Overlay video"),
-    h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder"),
-    d.images.length ? h("button", { onclick: () => api("/api/open", { path: d.path + "/package" }) }, "Open package") : null);
-  det.append(actions);
+    h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder")));
   if (d.metrics) {
     const want = ["tracks", "median_speed", "median_speed_kmh", "median_straightness", "duration", "calibration_rmse", "implied_person_height"];
     const rows = d.metrics.filter(r => want.includes(r.metric) || r.metric.startsWith("flow_"));
     det.append(h("div", { class: "row", style: "margin-bottom: 30px" }, rows.map(r => fig(r.label, r.value, ["count", "0..1"].includes(r.unit) ? "" : r.unit))));
   }
-  if (!d.images.length && !d.maps.length) det.append(h("div", { class: "note" }, "Not processed yet: Re-process builds the outputs from the tracked data."));
-  if (d.images.length) {
-    det.append(h("div", { class: "cap", style: "margin: 6px 0 12px" }, "Images  —  frameless"));
-    det.append(h("div", { class: "gallery" }, d.images.map(p => tile(p, base(p).replace(".png", "")))));
-  }
-  if (d.layers.length) {
-    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Layers  —  transparent"));
-    det.append(h("div", { class: "gallery" }, d.layers.map(p => tile(p, base(p).replace(".png", ""), "label"))));
-  }
-  if (d.labels.length || d.label_data.length) {
-    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Labels  —  legends, scale, north, metrics"));
-    det.append(h("div", { class: "gallery" }, d.labels.map(p => tile(p, base(p).replace(".png", ""), "label"))));
-    det.append(h("div", { class: "files", style: "margin-top: 14px" }, d.label_data.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p)))));
-  }
-  if (d.videos.length) {
-    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Videos"));
-    det.append(h("div", { class: "videos" }, d.videos.map(p => h("div", {},
+  const group = (title, kids) => { if (kids.length) det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, title), ...kids); };
+  const name = p => base(p).replace(/\.png$/, "");
+  const links = list => h("div", { class: "files" }, list.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p))));
+  if (!d.images.length && !d.extras.length) det.append(h("div", { class: "note" }, "Not processed yet: Re-process builds the outputs from the tracked data."));
+  if (d.plate) group("Plate", [h("div", { class: "thumbs", style: "margin-top: 0" }, tile(d.plate, name(d.plate)))]);
+  group("images/  —  frameless", d.images.length ? [h("div", { class: "gallery" }, d.images.map(p => tile(p, name(p))))] : []);
+  group("images/  —  layers on transparency", d.layers.length ? [h("div", { class: "gallery" }, d.layers.map(p => tile(p, name(p), "label")))] : []);
+  group("labels/  —  legends, scale bar, north arrow", d.labels.length ? [h("div", { class: "gallery" }, d.labels.map(p => tile(p, name(p), "label")))] : []);
+  group("videos/", d.videos.length ? [h("div", { class: "videos" }, d.videos.map(p => h("div", {},
       h("video", { src: fileUrl(p), controls: true, preload: "metadata", muted: true }),
-      h("div", { class: "tile" }, h("div", { class: "t" }, h("span", {}, (p.includes("package") ? "frameless · " : "") + base(p)), h("a", { href: fileUrl(p) + "&download=1" }, "↓")))))));
-  }
-  if (d.maps.length) {
-    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Maps with legend"));
-    det.append(h("div", { class: "gallery" }, d.maps.map(p => tile(p, base(p).replace(".png", "")))));
-  }
-  if (d.data.length) {
-    det.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, "Data  —  QGIS / Houdini"));
-    det.append(h("div", { class: "files" }, d.data.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p)))));
-  }
+      h("div", { class: "tile" }, h("div", { class: "t" }, h("span", {}, base(p) + (p.endsWith("_clean.mp4") ? "  ·  no labels" : "")), h("a", { href: fileUrl(p) + "&download=1" }, "↓"))))))] : []);
+  group("data/  —  metrics, tracks, statistics (QGIS, spreadsheets)", d.data.length ? [links(d.data)] : []);
+  group("houdini/  —  scripts + the CSVs they read", d.houdini.length ? [links(d.houdini)] : []);
+  group("extras/  —  maps with legends", d.extras.length ? [h("div", { class: "gallery" }, d.extras.map(p => tile(p, name(p))))] : []);
 }
 
 // ------------------------------------------------------------------ jobs

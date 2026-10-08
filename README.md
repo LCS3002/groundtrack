@@ -19,12 +19,10 @@ GeoTIFF ─► 2 CALIBRATE (once per site) ──► homography.json   (6–8 cl
           3 PROJECT TO GROUND   foot point → metres, vehicles shifted to their centre
           4 CLEAN + VECTORS     spikes, ID switches, occlusion stitching, Savitzky–Golay,
                 │               vx vy speed heading, per-track metrics
-          5 EXPORTS             points.csv · tracks.geojson · field_grid.csv · stats.json/csv
-                │               vector_field.csv · houdini_import.py · houdini_field.py
-          6 VISUALS             topdown.png/.mp4 · flow_field.png · density.png
-                │               speed_histogram.png · flowfield.mp4 · (debug.mp4 overlay)
-          7 PACKAGE             package/images: frameless images + videos, nothing around them
-                                package/labels: legends, scale bar, north arrow, metrics
+          5 EXPORTS             data/: points.csv · tracks.geojson · metrics · stats
+                │               houdini/: vector fields + import scripts
+          6 VISUALS             <site>_plate.png · images/ (frameless) · labels/ (legends,
+                                scale bar, north arrow) · videos/ (with and without labels)
 ```
 
 Everything runs from the command line or from a small local web page (`groundtrack ui`, §4).
@@ -366,27 +364,49 @@ separate lines for QGIS. `field_grid.csv` and `density.png` leave them out by de
 
 ## 5. Outputs (one folder per run)
 
+Each run writes `runs/<site>/<run>/`, sorted by what you use it for:
+
+```
+<site>_plate.png    the complete plate: in situ | plan, key figures, legend
+images/             frameless images (no title, frame, axes, legend or scale bar)
+labels/             the legends, scale bar and north arrow, on their own
+videos/             overlay / topdown / flowfield .mp4, and *_clean.mp4 without any labels
+data/               metrics, tracks and statistics: for QGIS and spreadsheets
+houdini/            the import scripts and the CSVs they read (self-contained)
+extras/             the maps with legends (topdown, flow field, density, speed histogram)
+_working/           tracker output, camera motion, config + calibration snapshot, log
+```
+
+**images/ and labels/** are for layouts: import only the picture, or only the legend.
+
 | file | contents |
 |---|---|
-| `points.csv` | `track_id, class, frame, time_s, x, y, vx, vy, speed, heading, predicted, source, group`. x/y in EPSG:27700 metres, v in m/s, heading in degrees clockwise from grid north |
-| `track_summary.csv` | per track: duration, path length, straight-line distance, straightness, mean/median/max speed, start/end, numbers of predicted and stitched samples, original tracker IDs |
-| `tracks.geojson` | one LineString per track (EPSG:27700) with the summary as attributes |
-| `predicted_gaps.geojson` | only the machine-made stretches |
-| `field_grid.csv` | world-aligned grid: `cell_x, cell_y, mean_vx, mean_vy, mean_speed, flow_speed, heading, coherence, count, n_tracks`. `count` = number of samples (your confidence); `coherence` is 1 when everyone moves the same way and 0 when flows cancel. `field_grid_<group>.csv` is written when there are several groups |
+| `images/insitu_frame.png`, `insitu_tracks.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, darkened, with every track as a thin light trail |
+| `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour and darkened (the base of the others) |
+| `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | tracks, vector-field streamlines (only where the flow is well supported and one-directional) and occupancy |
+| `images/*_layer.png` | the same drawings alone on transparency, to stack in Photoshop / InDesign / Illustrator. All `plan_*` images and layers share one extent and size |
+| `labels/legend_speed`, `legend_density`, `scale_bar`, `north_arrow` | `_light` (white ink, for dark backgrounds) and `_dark`, transparent. The scale bar is drawn at the plan images' pixel scale: resize the two together. `title.txt` holds the plate text |
+| `<site>_plate.png` | the complete plate. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
+| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
+| `videos/topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
+| `videos/flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
+| `videos/*_clean.mp4` | the same videos without clock, legend, scale bar or title |
+| `data/metrics.csv`, `metrics.json` | the key figures (tracks, speeds, flow, duration, camera, calibration error, people check); the JSON adds every statistic and the plan images' extent in EPSG:27700 and pixels per metre |
+| `data/points.csv` | `track_id, class, frame, time_s, x, y, vx, vy, speed, heading, predicted, source, group`. x/y in EPSG:27700 metres, v in m/s, heading in degrees clockwise from grid north |
+| `data/track_metrics.csv` | per track: duration, path length, straight-line distance, straightness, mean/median/max speed, start/end, numbers of predicted and stitched samples, original tracker IDs |
+| `data/tracks.geojson` | one LineString per track (EPSG:27700) with the summary as attributes |
+| `data/predicted_gaps.geojson` | only the machine-made stretches |
+| `data/field_grid.csv` | world-aligned grid: `cell_x, cell_y, mean_vx, mean_vy, mean_speed, flow_speed, heading, coherence, count, n_tracks`. `count` = number of samples (your confidence); `coherence` is 1 when everyone moves the same way and 0 when flows cancel. `field_grid_<group>.csv` is written when there are several groups |
 | (flow) | for traffic, put a `count_lines` entry across the road: those crossings, by direction, are the flow. The per-group "tracks" number also counts fragments and side roads |
-| `stats.json`, `stats.csv` | per class and group: tracks, flow per minute (as a time series and a mean), mean/median/85th-percentile speed, speed histogram, mean straightness, plus count-line crossings |
-| `houdini_import.py` | Python SOP script (§6) |
-| `topdown.png` | tracks over the dimmed GeoTIFF, coloured by speed blue → red, with a separate scale per group, scale bar and north arrow, 300 dpi |
-| `flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
-| `topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
-| `density.png` | occupancy heat map: object-seconds per m² |
-| `speed_histogram.png` | mean speed per track, same colours |
-| `debug.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` shows the full debug view (boxes, IDs, rejected tracks in grey), `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
-| `raw_tracks.csv` | the tracker output in pixels (`bbox`, `confidence`, `predicted`) |
-| `config_used.yaml`, `homography_used.json`, `run_log.txt` | provenance |
-| `package/images/` | **pure images**, nothing around the data (no title, frame, axes, legend or scale bar): `insitu_frame`, `insitu_tracks`, `plan_aerial`, `plan_map`, `plan_tracks`, `plan_flowfield`, `plan_density`; `layers/` holds the trails, flow and density alone on transparency; `topdown.mp4`, `flowfield.mp4` and `overlay.mp4` without any labels. All `plan_*` images and layers share one extent and size, so they stack exactly |
-| `package/labels/` | the parts that were left out, separately: `legend_speed`, `legend_density`, `scale_bar` (drawn at the plan images' pixel scale: scale them together), `north_arrow`, each as `_light` (for dark backgrounds) and `_dark`, on transparency; `metrics.csv` (key figures), `metrics.json` (figures, all stats, the plan extent in EPSG:27700 and its pixel scale), `track_metrics.csv` (per track), `title.txt` |
-| `package/*/00_complete.png` | the complete plate (in situ + plan, figures, legend), in both folders. Text from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Rebuild with `groundtrack package -c ... --run ...` |
+| `data/stats.json`, `stats.csv` | per class and group: tracks, flow per minute (as a time series and a mean), mean/median/85th-percentile speed, speed histogram, mean straightness, plus count-line crossings |
+| `houdini/` | `houdini_import.py`, `houdini_field.py` (§6) and the `points.csv` / `vector_field*.csv` they read |
+| `extras/topdown.png` | tracks over the dimmed GeoTIFF, coloured by speed blue → red, with a separate scale per group, scale bar and north arrow, 300 dpi |
+| `extras/flow_field.png`, `density.png`, `speed_histogram.png` | streamlines, occupancy (object-seconds per m²) and mean speed per track, with legends |
+| `_working/raw_tracks.csv` | the tracker output in pixels (`bbox`, `confidence`, `predicted`) |
+| `_working/config_used.yaml`, `homography_used.json`, `run_log.txt` | provenance |
+
+Runs made with an older version are moved into this layout the first time you open or
+re-process them.
 
 **QGIS:** drag `tracks.geojson` in; it carries its CRS. For `points.csv` or `field_grid.csv`, use
 *Layer → Add Delimited Text Layer*, with X = `x` / `cell_x`, Y = `y` / `cell_y`, CRS EPSG:27700.
@@ -398,10 +418,10 @@ symbology with `mean_vx` / `mean_vy`.
 ## 6. Houdini import
 
 1. Create a *Geometry* node. Inside it, add a **Python** SOP (*Python Script*).
-2. Paste the contents of `runs/<site>/<run>/houdini_import.py` into its code box. Or paste this
-   one-liner, which re-reads the file each cook:
+2. Paste the contents of `runs/<site>/<run>/houdini/houdini_import.py` into its code box. Or
+   paste this one-liner, which re-reads the file each cook:
    ```python
-   exec(open(r"C:/path/to/runs/plaza/20261007-153000/houdini_import.py").read())
+   exec(open(r"C:/path/to/runs/plaza/20261007-153000/houdini/houdini_import.py").read())
    ```
 3. You get one point per sample with `track_id, class, group, frame, time_s, v` (velocity, m/s),
    `speed, heading, predicted` and `Cd`. There's one open polyline per track (with prim attribs
@@ -562,13 +582,14 @@ RMS. Real footage will be worse; that's what this check is for.
 * Only bounding-box coordinates are stored. **No face crops, no images of people, no
   appearance embeddings, no identities.** ReID is off, and track IDs are arbitrary numbers that
   are only meaningful within one video.
-* `debug.mp4` is **off by default**. When you do render it, people are **blurred** unless you pass
-  `--no-blur`. Don't share an unblurred debug video.
+* The overlay video (`videos/overlay.mp4`) is **off by default**. When you do render it, people
+  are **blurred** unless you pass `--no-blur`. Don't share an unblurred overlay video.
 * **Delete the raw footage once you've processed it and checked the run.** `points.csv`,
   `tracks.geojson` and the rest contain everything the research needs. In PowerShell:
   `Remove-Item footage\plaza.mp4`. On macOS: `rm footage/plaza.mp4`, then empty the Bin. Also
   delete the copies on your phone and in its cloud backup (iCloud / Google Photos "Recently
-  deleted"), and any `debug.mp4`. Keep the calibration files: they hold no personal data.
+  deleted"), and any unblurred overlay video. Keep the calibration files: they hold no personal
+  data.
 * If the footage might show identifiable people, follow your institution's ethics and data
   protection guidance (UK GDPR). Signage at the site and short retention periods are standard
   practice.
@@ -593,6 +614,7 @@ pytest -m "not e2e"    # unit tests only (~2 s)
 * `test_field.py`: the vector field keeps speeds, keeps opposite lanes apart (also when they are
   closer than the kernel), density units, time slices, the Houdini field script.
 * `test_selfcal.py`: the people-height check on a synthetic camera, `max_range_m: auto`.
+* `test_layout.py`: the run folder layout, and moving runs made by older versions into it.
 * `test_ui.py`: the local UI only accepts its own configs, files inside the project, known
   commands and safe run names; it refuses other hostnames and cross-site posts; the camera
   position is written into the config without touching the rest.

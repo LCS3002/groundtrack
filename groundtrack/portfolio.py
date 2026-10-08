@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .config import Config
 from .geo import GeoRaster
+from .layout import open_run
 
 BG = (11, 11, 12)
 INK = (236, 236, 232)
@@ -95,11 +96,12 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     from .trajectories import recover_feet
     from .video import read_frame
 
-    raw = pd.read_csv(run_dir / "raw_tracks.csv")
+    run = open_run(run_dir)
+    raw = pd.read_csv(run.raw_tracks)
     raw["predicted"] = raw["predicted"].astype(str).str.lower().isin(["true", "1"])
     reg, ref_frame = None, 0
-    if (run_dir / "registration.npz").exists():
-        reg, ref_frame, _ = load_registration(run_dir / "registration.npz")
+    if run.registration.exists():
+        reg, ref_frame, _ = load_registration(run.registration)
     if frame is None:
         frame = int((raw["frame"].min() + raw["frame"].max()) // 2)
 
@@ -241,11 +243,12 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
                title: str, index: str = "", subtitle: str = "", date: str = "",
                panel_h: int = 2000, frame: int | None = None, width: int | None = 3600,
                credit: str = "") -> Path:
-    run_dir = Path(run_dir)
-    meta = json.loads((run_dir / "raw_tracks_meta.json").read_text(encoding="utf-8"))
-    points = pd.read_csv(run_dir / "points.csv")
-    summary = pd.read_csv(run_dir / "track_summary.csv")
-    stats = json.loads((run_dir / "stats.json").read_text(encoding="utf-8"))
+    run = open_run(run_dir)
+    run_dir = run.root
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    points = pd.read_csv(run.points)
+    summary = pd.read_csv(run.tracks)
+    stats = json.loads(run.stats_json.read_text(encoding="utf-8"))
     group = summary["group"].mode().iloc[0]
     g = cfg.groups[group]
 
@@ -274,7 +277,7 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
         _text(d, (margin + tw + 40, 232), index, 54, "Light", GREY, tracking=0.1)
     cam = None
     try:
-        cam = json.loads((run_dir / "homography_used.json").read_text(encoding="utf-8"))             .get("camera_params")
+        cam = json.loads(run.homography_used.read_text(encoding="utf-8"))             .get("camera_params")
     except (OSError, ValueError):
         pass
     if cam:
