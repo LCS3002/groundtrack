@@ -21,6 +21,7 @@ class SyntheticCamera:
     def __init__(self, width=1920, height=1080, f=1400.0, height_m=12.0, pitch_deg=30.0,
                  cam_local=(0.0, -20.0), yaw_deg=0.0, roll_deg=0.0, origin=ORIGIN):
         self.width, self.height = width, height
+        self.yaw, self.pitch = yaw_deg, pitch_deg
         self.K = np.array([[f, 0, width / 2], [0, f, height / 2], [0, 0, 1.0]])
         p, yw, rl = np.radians(pitch_deg), np.radians(yaw_deg), np.radians(roll_deg)
         fwd = np.array([np.sin(yw) * np.cos(p), np.cos(yw) * np.cos(p), -np.sin(p)])

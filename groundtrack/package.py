@@ -185,22 +185,33 @@ def north_arrow_png(path: Path, variant: str) -> Path:
 
 
 # --------------------------------------------------------------------------- metrics
-def key_figures(stats: dict, summary: pd.DataFrame, group: str, cam: dict | None,
+def key_figures(stats: dict, summary: pd.DataFrame, groups, cam: dict | None,
                 rmse_m: float | None) -> list[tuple[str, str, object, str]]:
-    """(metric, label, value, unit) rows: the figures printed on the plate, and a few more."""
+    """(metric, label, value, unit) rows: the figures printed on the plate, and a few more.
+
+    With several groups (people and vehicles in one clip) the per-track figures are given
+    per group, as <metric>_<group>."""
+    groups = [groups] if isinstance(groups, str) else list(groups)
     rows = [("tracks", "Tracks", int(len(summary)), "count")]
-    if len(summary):
-        med = float(summary["mean_speed"].median())
-        rows.append(("median_speed", "Median speed", round(med, 2), "m/s"))
-        if group == "vehicles":
-            rows.append(("median_speed_kmh", "Median speed", round(med * 3.6, 1), "km/h"))
-        rows.append(("mean_speed", "Mean speed", round(float(summary["mean_speed"].mean()), 2),
-                     "m/s"))
-        rows.append(("median_straightness", "Straightness",
-                     round(float(summary["straightness"].median()), 3), "0..1"))
-        rows.append(("median_path_length", "Median path length",
-                     round(float(summary["path_length_m"].median()), 1), "m")
-                    if "path_length_m" in summary else None)
+    for g in groups:
+        sel = summary[summary["group"] == g] if "group" in summary else summary
+        if not len(sel):
+            continue
+        sfx, lab = ("", "") if len(groups) == 1 else (f"_{g}", f" ({g})")
+        if sfx:
+            rows.append((f"tracks{sfx}", f"Tracks{lab}", int(len(sel)), "count"))
+        med = float(sel["mean_speed"].median())
+        rows.append((f"median_speed{sfx}", f"Median speed{lab}", round(med, 2), "m/s"))
+        if g == "vehicles":
+            rows.append((f"median_speed_kmh{sfx}", f"Median speed{lab}", round(med * 3.6, 1),
+                         "km/h"))
+        rows.append((f"mean_speed{sfx}", f"Mean speed{lab}",
+                     round(float(sel["mean_speed"].mean()), 2), "m/s"))
+        rows.append((f"median_straightness{sfx}", f"Straightness{lab}",
+                     round(float(sel["straightness"].median()), 3), "0..1"))
+        if "path_length_m" in sel:
+            rows.append((f"median_path_length{sfx}", f"Median path length{lab}",
+                         round(float(sel["path_length_m"].median()), 1), "m"))
     for cl in stats.get("count_lines", []):
         rows.append((f"flow_{cl['name']}", f"Flow {cl['name']}", cl["flow_per_min"], "per min"))
         rows.append((f"crossings_{cl['name']}_l2r", f"{cl['name']} left to right",
@@ -246,8 +257,8 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     if points.empty:
         log("images / labels: no tracks, nothing to draw")
         return run.root
-    group = summary["group"].mode().iloc[0] if len(summary) else points["group"].iloc[0]
-    g = cfg.groups[group]
+    ranges = pf.group_ranges(cfg, points)
+    groups = list(ranges)
     fps, stride = float(meta["fps"]), int(meta["vid_stride"])
     hom = {}
     if run.homography_used.exists():
@@ -260,17 +271,19 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     plan_h = int(pk.get("plan_height_px", 2400))
     W, H = pf.plan_size(ext, plan_h)
     lw = 1.3 * plan_h / 2000
-    L = pf.plan_layers(points, raster, ext, plan_h, g.speed_range, line_px=lw)
+    L = pf.plan_layers(points, raster, ext, plan_h, ranges, line_px=lw)
     base = L["base"]
     if L["aerial"] is not None:
         _save(L["aerial"], images / "plan_aerial.png")
     _save(base, images / "plan_map.png")
     _save(base + L["trails"], images / "plan_tracks.png")
     _save(_additive_to_rgba(L["trails"]), images / "plan_tracks_layer.png")
-    field_csv = run.field_csv(group) if run.field_csv(group).exists() else run.field_csv()
-    if field_csv.exists():
-        flow = flow_layer(pd.read_csv(field_csv), ext, (W, H), float(cfg["field"]["cell_size_m"]),
-                          g.speed_range, line_px=1.6 * plan_h / 2000)
+    # one field per group (each on its own speed scale), or the single "all" field
+    fields = [(run.field_csv(gn), rg) for gn, rg in ranges.items() if len(ranges) > 1
+              and run.field_csv(gn).exists()] or [(run.field_csv(), next(iter(ranges.values())))]
+    if all(f.exists() for f, _ in fields):
+        flow = sum(flow_layer(pd.read_csv(f), ext, (W, H), float(cfg["field"]["cell_size_m"]),
+                              rg, line_px=1.6 * plan_h / 2000) for f, rg in fields)
         _save(base + flow, images / "plan_flowfield.png")
         _save(_additive_to_rgba(flow), images / "plan_flowfield_layer.png")
     dens, dmax = density_layer(points, ext, (W, H), stride / fps)
@@ -289,21 +302,26 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     else:
         log(f"images: footage {video} not found, in-situ images skipped")
 
-    # ---- labels
-    lo, hi = g.speed_range
-    spd_grad = pf.speed_rgb(np.linspace(lo, hi, 720), lo, hi)
-    hi_txt = f"{hi:g} m/s" + (f"  ·  {hi * 3.6:.0f} km/h" if group == "vehicles" else "")
+    # ---- labels (one speed legend per group when several are present)
     den_grad = _ramp(np.linspace(0, 1, 720), DENSITY_STOPS)
     px_per_m = W / (ext[1] - ext[0])
     bar_m = pf._nice(ext[1] - ext[0])
     for v in variants:
-        legend_png(labels / f"legend_speed_{v}.png", "SPEED", f"{lo:g}", hi_txt, spd_grad, v)
+        for gname, (lo, hi) in ranges.items():
+            spd_grad = pf.speed_rgb(np.linspace(lo, hi, 720), lo, hi)
+            hi_txt = f"{hi:g} m/s" + (f"  ·  {hi * 3.6:.0f} km/h" if gname == "vehicles" else "")
+            if len(ranges) == 1:
+                legend_png(labels / f"legend_speed_{v}.png", "SPEED", f"{lo:g}", hi_txt,
+                           spd_grad, v)
+            else:
+                legend_png(labels / f"legend_speed_{gname}_{v}.png", f"SPEED  ·  {gname.upper()}",
+                           f"{lo:g}", hi_txt, spd_grad, v)
         legend_png(labels / f"legend_density_{v}.png", "OCCUPANCY", "low",
                    f"{dmax:.2g} s / m²", den_grad, v)
         scale_bar_png(labels / f"scale_bar_{v}.png", bar_m, px_per_m, v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
 
-    figs = key_figures(stats, summary, group, cam, hom.get("rmse_m"))
+    figs = key_figures(stats, summary, groups, cam, hom.get("rmse_m"))
     with open(run.metrics_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value", "unit", "label"])
@@ -324,7 +342,7 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
                  "density_max_s_per_m2": round(dmax, 4)},
         "insitu": ({"frame": insitu["frame"], "size_px": list(insitu["frame_rgb"].shape[1::-1])}
                    if insitu else None),
-        "speed_range_m_s": [lo, hi],
+        "speed_range_m_s": {gn: list(rg) for gn, rg in ranges.items()},
         "camera": cam,
         "stats": stats,
     }

@@ -266,8 +266,11 @@ function renderSite() {
   const calKids = [];
   if (cal.ok) {
     const c = cal.camera;
+    const clicked = !cal.method || cal.method === "points";
     calKids.push(h("div", { class: "row" },
-      fig("Error (RMSE)", fmt(cal.rmse_m, 2), "m"), fig("Point pairs", cal.n_points ?? "—"),
+      fig("Method", clicked ? "clicked points" : cal.method),
+      clicked ? fig("Error (RMSE)", fmt(cal.rmse_m, 2), "m") : fig("Median distance to road", fmt(cal.rmse_m, 1), "m"),
+      clicked ? fig("Point pairs", cal.n_points ?? "—") : null,
       c ? fig("Camera height", fmt(c.height_m, 0), "m") : null, c ? fig("Field of view", fmt(c.hfov_deg, 0), "°") : null,
       fig("ROI", s.roi ? "yes" : "whole frame")));
     const lastCheck = s.runs.find(r => r.check)?.check;
@@ -277,14 +280,16 @@ function renderSite() {
         `People check (latest run): detected people come out ${fmt(lastCheck.implied_person_height_m, 2)} m tall (${err > 0 ? "+" : ""}${fmt(err, 0)} % vs 1.70 m). `
         + (Math.abs(err) <= 10 ? "Calibration is consistent." : "Worth re-checking: more spread-out points, or the camera height.")));
     }
+    if (cal.auto_candidate) calKids.push(h("div", { class: "note" }, "An automatic calibration is saved next to yours (" + base(cal.auto_candidate) + "). Your clicked one is in use; compare the check images, and use the automatic one with: groundtrack autocalibrate -c " + s.config + " --replace"));
     if (cal.checks?.length) calKids.push(h("div", { class: "thumbs" }, cal.checks.map(p => tile(p, base(p)))));
   } else calKids.push(h("div", { class: "note" }, "Not calibrated yet."));
   m.append(section("03", "Calibration", ...calKids,
     h("div", { style: "margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap" },
       h("button", { class: cal.ok ? "" : "primary", disabled: !(v.ok && s.map.ok), onclick: () => startJob("calibrate", { time: cTime.value }) }, cal.ok ? "Re-calibrate" : "Pick points"),
       cTime,
+      h("button", { disabled: !(v.ok && s.map.ok), onclick: () => startJob("autocalibrate", { replace: !cal.ok }) }, "Calibrate automatically"),
       h("button", { disabled: !v.ok, onclick: () => startJob("roi") }, "Draw region of interest")),
-    h("div", { class: "hint" }, "Opens the point picker in its own window: click a spot in the video, then the same spot on the map. Enter to finish. The ROI limits detection to the area you draw.")));
+    h("div", { class: "hint" }, "Pick points: opens the point picker in its own window (click a spot in the video, then the same spot on the map; Enter to finish). Calibrate automatically: inherits the calibration of a clip filmed from the same spot, or fits the camera so the tracked vehicles drive on the OpenStreetMap roads (needs the camera position; ~10 m, use clicks for better). An existing calibration is kept: the automatic one is saved next to it. The ROI limits detection to the area you draw.")));
 
   // 04 run
   const rn = h("input", { placeholder: "run name (optional)", style: "width: 200px" });

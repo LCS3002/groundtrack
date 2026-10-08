@@ -136,6 +136,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     check = _people_height_check(cfg, raw, h, reg, log)
     if check:
         stats["calibration_check"] = check
+    roads = _roads_check(cfg, raw, h, reg, log)
+    if roads:
+        stats["calibration_roads_check"] = roads
     out["stats_json"] = run.stats_json
     out["stats_json"].write_text(json.dumps(stats, indent=2), encoding="utf-8")
     out["stats_csv"] = run.stats_csv
@@ -174,9 +177,12 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     if cfg["visuals"].get("flowfield_video", True) and len(points):
         from .animation import render_flowfield_video
 
-        gname = sorted(set(points["group"]))[0]
+        present = sorted(set(points["group"]))
+        gname = points.groupby("group")["track_id"].nunique().idxmax()
+        fields = ([(pd.read_csv(run.field_csv(g)), cfg.groups[g].speed_range) for g in present]
+                  if len(present) > 1 else pd.read_csv(run.field_csv()))
         out["flowfield_video"] = run.videos / "flowfield.mp4"
-        render_flowfield_video(pd.read_csv(run.field_csv()), points, raster, cfg,
+        render_flowfield_video(fields, points, raster, cfg,
                                out["flowfield_video"], visuals._extent(points, raster, cfg),
                                float(cfg["field"]["cell_size_m"]),
                                cfg.groups[gname].speed_range, log=log,
@@ -213,6 +219,30 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
 def _clean_videos(cfg: Config) -> bool:
     """Frameless outputs (images/, labels/, *_clean.mp4) are on unless package.enabled: false."""
     return bool((cfg.get("package") or {}).get("enabled", True))
+
+
+def _roads_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:
+    """Share of vehicle positions on OpenStreetMap roads (needs camera_position; the road
+    lines are downloaded once per camera spot and cached next to the calibration)."""
+    prior = cfg.get("camera_position")
+    if not prior or not cfg.path("homography") or \
+            raw["class"].isin(["car", "bus", "truck"]).sum() < 100:
+        return None
+    try:
+        from .autocal import _road_cache, osm_roads, quality_checks
+
+        ways = osm_roads(prior["E"], prior["N"], cache=_road_cache(cfg.path("homography"), prior),
+                         timeout=20)
+        c = [x for x in quality_checks(h, raw, cfg, reg, ways, people=False)["checks"]
+             if x["name"] == "vehicles on roads"]
+    except Exception as e:  # offline, Overpass busy, ...: the check is optional
+        log(f"  road check skipped: {e}")
+        return None
+    if not c:
+        return None
+    log(f"  calibration check: {c[0]['value']} of vehicle positions within 6 m of a mapped road"
+        + (" -> consistent" if c[0]["ok"] else " -> CHECK the calibration"))
+    return {"vehicles_on_roads": c[0]["value"], "ok": c[0]["ok"], "note": c[0]["note"]}
 
 
 def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:

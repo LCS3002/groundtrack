@@ -85,7 +85,7 @@ pipeline. Look in `demo_site/runs/demo/demo/`.
   off; Android: turn off "video stabilisation"). Electronic stabilisation crops and shifts the
   frame over time, which breaks the calibration.
 * **Use the 1× (main) lens.** Don't zoom, and avoid the 0.5× ultra-wide: its distortion bends
-  straight kerbs (or use the lens calibration, §3.5). The phone must not switch lenses during a
+  straight kerbs (or use the lens calibration, §3.6). The phone must not switch lenses during a
   take. Lock focus and exposure (long-press on iPhone).
 * **Fixed frame rate.** Turn off "Auto FPS" / "Auto Low Light FPS". Variable frame rate makes
   speeds wrong. 1080p30 or 4K30 are both fine.
@@ -171,7 +171,46 @@ It takes the building's centre, sets the tolerance to half its size (you may hav
 in it) and the height to floor × 3.1 m + 1.5 m (`--height 4` to give it directly). Only the search
 text is sent to OpenStreetMap. The same search is in the UI.
 
-### 3.4 Pick the points
+### 3.4 Or let it calibrate itself: `autocalibrate`
+
+```powershell
+groundtrack autocalibrate -c sites/motorway7.yaml
+```
+
+It tries, in this order:
+
+1. **Same spot.** If another site config in the same folder is calibrated and was filmed from
+   the same position (any direction, any zoom), the new clip inherits that calibration. Two
+   views from one position are related by a single image transform, so this is exact (0.1 m
+   in a test), not an estimate. It only works if the two views overlap.
+2. **Vehicles on roads** (needs `camera_position` and moving traffic). It tracks the first 30 s
+   if there is no run yet, downloads the road lines around the camera from OpenStreetMap
+   (only the search box is sent), and solves direction, tilt, roll and zoom so that the
+   vehicles drive on roads, along them, at believable speeds, with car-sized footprints. The
+   car size sets the scale; without it, a long lens can squeeze every track onto one patch
+   of road. If you already clicked points, they are used too.
+3. Then it **checks** the result against the footage: people's height, and the share of
+   vehicles on mapped roads.
+
+A calibration you clicked is never overwritten: the automatic one is saved next to it as
+`<name>_auto.json` with its own check image, and `--replace` switches to it (keeping a
+backup). The UI has the same as a button.
+
+How good is it? On the five motorway clips, with no clicks and no hint about the zoom, it found
+the same camera as the hand calibration every time: direction within 1–4°, tilt within 1.5°,
+field of view within 2°. On the ground, measured against the clicked map points:
+
+| | median error |
+|---|---|
+| clicked points (leave-one-out) | 4.2 m |
+| clicked points + vehicles on roads | 3.8 m |
+| vehicles on roads, no clicks | 9.8 m (5–13 m on four clips, 33 m on one) |
+
+So: without clicks it's good for flows, directions and vector fields, and as a check on a
+hand calibration; for metre-level positions, add 3–4 clicks and it uses both. For people-only
+clips (a plaza) there is no automatic method yet besides "same spot": pick 3–4 points.
+
+### 3.5 Pick the points
 
 ```powershell
 groundtrack calibrate --config sites/plaza.yaml            # first frame
@@ -217,7 +256,7 @@ Outputs go to `calibration/`:
 Non-interactive alternative: `groundtrack calibrate --config ... --points-csv my_points.csv --no-gui`
 with columns `u,v,E,N` (for example ground control points you already have).
 
-### 3.5 Optional: lens undistortion
+### 3.6 Optional: lens undistortion
 
 Only worth doing if straight kerbs look visibly bent near the frame edges. Print a checkerboard,
 and film or photograph it with the **same phone, lens and resolution** from 10–20 angles:
@@ -230,7 +269,7 @@ Set `lens: ../calibration/phone_1x_lens.json` in the site YAML, then **re-run `c
 picker then shows the undistorted frame. If the lens and homography don't match, the tool
 refuses to run.
 
-### 3.6 Optional: region of interest
+### 3.7 Optional: region of interest
 
 ```powershell
 groundtrack roi --config sites/motorway.yaml
@@ -241,7 +280,7 @@ road, the sky, reflections, and parked cars you don't want. Detections whose **f
 outside are ignored before tracking. The polygon is saved as `sites/<site>_roi.json` and
 picked up automatically. It is drawn on the calibration frame, so calibrate first.
 
-### 3.7 If the camera moved: `stabilize`
+### 3.8 If the camera moved: `stabilize`
 
 A homography is only valid for the frame you clicked on. If the phone moved during the clip
 (handheld, a railing that flexes, a slowly creeping tripod), set
@@ -327,6 +366,16 @@ Classes come from `groups`: each group lists its COCO classes (`person`, `bicycl
 `motorcycle`, `bus`, `truck`) and carries its own physics (max plausible speed, smoothing,
 ground offset, colour range). Remove a group to stop tracking it. Every option, with comments,
 is in `groundtrack/config.py` (`DEFAULTS`).
+
+### People and vehicles in one clip
+
+Every class goes into a group (`groups:` in the config) with its own speed range, smoothing
+and ground point (people: feet; vehicles: shifted to the vehicle centre). A config that lists
+both `people` and `vehicles` tracks both at once. The data, statistics and vector fields come
+per group (`vector_field_<group>.csv`, `field_grid_<group>.csv`); in the images, videos and
+plate every track is coloured on its own group's speed scale, there is one speed legend per
+group (`labels/legend_speed_<group>_*.png`), and the flow-field video streams each group
+through its own field.
 
 ### Vehicle ground point (read this for the motorway)
 
@@ -565,7 +614,7 @@ RMS. Real footage will be worse; that's what this check is for.
 |---|---|
 | `groundtrack device` says cpu on the NVIDIA laptop | you installed the CPU wheel: `pip uninstall torch torchvision` and reinstall from the `cu128` index (§1); update the NVIDIA driver |
 | calibration RMSE > 0.5 m | spread the points out, use ground-contact features, zoom in before clicking, check the map really is EPSG:27700, film with **stabilisation off** and the **1× lens** |
-| check image lines up at the centre but not at the edges | lens distortion: use the 1× lens, or run `lens-calibrate` (§3.5) |
+| check image lines up at the centre but not at the edges | lens distortion: use the 1× lens, or run `lens-calibrate` (§3.6) |
 | speeds drift over a long recording | the camera moved (tripod knocked, window flexing); re-calibrate on a frame from that part |
 | ghost tracks over windows / glass | **avoid window reflections**: lens against the glass, dark cloth, room lights off; mask with an ROI |
 | many short broken tracks | increase `imgsz` or use a bigger model; raise `track_buffer_s`; check `stitch_radius_m`; set an ROI to cut the blurry far field |
@@ -600,7 +649,7 @@ RMS. Real footage will be worse; that's what this check is for.
 
 ```powershell
 pytest                 # everything, including the end-to-end run (~40 s on the GPU)
-pytest -m "not e2e"    # unit tests only (~2 s)
+pytest -m "not e2e"    # unit tests only (~1 min, most of it the automatic calibration)
 ```
 
 * `test_homography.py`: exact recovery on a synthetic camera, click noise, a rejected bad click,
@@ -614,6 +663,10 @@ pytest -m "not e2e"    # unit tests only (~2 s)
 * `test_field.py`: the vector field keeps speeds, keeps opposite lanes apart (also when they are
   closer than the kernel), density units, time slices, the Houdini field script.
 * `test_selfcal.py`: the people-height check on a synthetic camera, `max_range_m: auto`.
+* `test_autocal.py`: same-spot transfer recovers a known camera exactly and refuses unrelated
+  views; vehicles on roads recover direction, tilt and zoom of two synthetic cameras.
+* `test_package.py`: a clip with people and vehicles: each group on its own colour scale,
+  legends and figures per group, the two-field flow-field video.
 * `test_layout.py`: the run folder layout, and moving runs made by older versions into it.
 * `test_ui.py`: the local UI only accepts its own configs, files inside the project, known
   commands and safe run names; it refuses other hostnames and cross-site posts; the camera

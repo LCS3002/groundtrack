@@ -92,6 +92,9 @@ class Homography:
             "loo_rmse_m": self.loo_rmse_m,
             "camera_estimate": self.camera(),
             "camera_params": getattr(self, "camera_params", None),
+            # how it was made: "points" (clicked), "same spot (from <site>)", "vehicles on roads"
+            "method": getattr(self, "method", "points"),
+            "method_info": getattr(self, "method_info", None),
             "points": self.points,
         }
         Path(path).write_text(json.dumps(d, indent=2), encoding="utf-8")
@@ -114,6 +117,8 @@ class Homography:
         )
         if d.get("camera_params"):
             h_obj.camera_params = d["camera_params"]
+        h_obj.method = d.get("method", "points")
+        h_obj.method_info = d.get("method_info")
         return h_obj
 
 

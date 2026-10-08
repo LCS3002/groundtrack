@@ -31,6 +31,15 @@ FONT_FILES = [r"C:\Windows\Fonts\bahnschrift.ttf", "/System/Library/Fonts/Supple
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
 
 
+GROUP_NOUN = {"people": "person", "cycles": "cyclist", "vehicles": "vehicle"}
+
+
+def group_ranges(cfg: Config, points: pd.DataFrame) -> dict:
+    """{group: speed range} for the groups present, most tracks first."""
+    order = points.groupby("group")["track_id"].nunique().sort_values(ascending=False).index
+    return {g: tuple(cfg.groups[g].speed_range) for g in order if g in cfg.groups}
+
+
 def speed_rgb(v, lo, hi) -> np.ndarray:
     t = np.clip((np.asarray(v, float) - lo) / max(hi - lo, 1e-9), 0, 1)
     xs = [s[0] for s in STOPS]
@@ -126,9 +135,10 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     keep = np.isfinite(speed)
     s = out_h / H
     paths = []
-    sub = raw.assign(px=pos[:, 0] * s, py=pos[:, 1] * s, sp=speed)[keep]
-    for _, t in sub.sort_values("frame").groupby("track_id"):
-        paths.append((t[["px", "py"]].to_numpy(), t["sp"].to_numpy(), t["frame"].to_numpy()))
+    sub = raw.assign(px=pos[:, 0] * s, py=pos[:, 1] * s, sp=speed, lo=lo, hi=hi)[keep]
+    for _, t in sub.sort_values("frame").groupby("track_id"):  # each on its group's scale
+        paths.append((t[["px", "py"]].to_numpy(), t["sp"].to_numpy(), t["frame"].to_numpy(),
+                      float(t["lo"].iloc[0]), float(t["hi"].iloc[0])))
     lo_, hi_ = float(np.nanmin(lo)), float(np.nanmax(hi))
     rgb = cv2.cvtColor(cv2.resize(img, (int(round(W * s)), out_h), interpolation=cv2.INTER_AREA),
                        cv2.COLOR_BGR2RGB)
@@ -145,9 +155,12 @@ def insitu_panel(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: int
 
 
 def _segments_from(paths, lo, hi, max_gap):
+    """Coloured segments; a path may carry its own (lo, hi) speed range as items 4 and 5."""
     segs = []
-    for xy, sp, fr in paths:
-        cols = speed_rgb(sp, lo, hi)
+    for path in paths:
+        xy, sp, fr = path[:3]
+        a, b = (path[3], path[4]) if len(path) >= 5 else (lo, hi)
+        cols = speed_rgb(sp, a, b)
         for k in range(1, len(xy)):
             if fr[k] - fr[k - 1] > max_gap:
                 continue
@@ -196,7 +209,10 @@ def plan_size(ext, out_h: int) -> tuple[int, int]:
 
 def plan_layers(points: pd.DataFrame, raster: GeoRaster | None, ext, out_h: int, speed_range,
                 line_px: float = 1.3) -> dict:
-    """Plan layers at out_h: aerial (RGB or None), base (darkened, float), trails (float)."""
+    """Plan layers at out_h: aerial (RGB or None), base (darkened, float), trails (float).
+
+    speed_range: (lo, hi) for every track, or {group: (lo, hi)} to colour each track on its
+    own group's scale (people and vehicles in one clip)."""
     x0, x1, y0, y1 = ext
     out_w, _ = plan_size(ext, out_h)
     aerial = None
@@ -206,12 +222,15 @@ def plan_layers(points: pd.DataFrame, raster: GeoRaster | None, ext, out_h: int,
     else:
         base = np.full((out_h, out_w, 3), BG, np.float32)
     sx, sy = out_w / (x1 - x0), out_h / (y1 - y0)
+    ranges = speed_range if isinstance(speed_range, dict) else None
+    default = next(iter(ranges.values())) if ranges else tuple(speed_range)
     paths = []
     for _, t in points.sort_values("frame").groupby("track_id"):
         xy = np.column_stack([(t["x"] - x0) * sx, (y1 - t["y"]) * sy])
-        paths.append((xy, t["speed"].to_numpy(), t["frame"].to_numpy()))
+        rng = ranges.get(t["group"].iloc[0], default) if ranges else default
+        paths.append((xy, t["speed"].to_numpy(), t["frame"].to_numpy(), *rng))
     stride = max(1, int(np.median(np.diff(np.sort(points["frame"].unique())))))
-    trails = _glow_lines((out_h, out_w), _segments_from(paths, *speed_range, 3 * stride), line_px)
+    trails = _glow_lines((out_h, out_w), _segments_from(paths, *default, 3 * stride), line_px)
     return {"aerial": aerial, "base": base, "trails": trails}
 
 
@@ -249,18 +268,18 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
     points = pd.read_csv(run.points)
     summary = pd.read_csv(run.tracks)
     stats = json.loads(run.stats_json.read_text(encoding="utf-8"))
-    group = summary["group"].mode().iloc[0]
-    g = cfg.groups[group]
+    ranges = group_ranges(cfg, points)
+    groups = list(ranges)
 
-    margin, gutter, top, bottom = 200, 90, 520, 400
+    margin, gutter, top, bottom = 200, 90, 520, 320 + 80 * len(groups)
     if width:  # same plate width for every clip: panels share it in proportion to their aspect
-        _, e0 = plan_panel(points, None, cfg, 200, g.speed_range)
+        _, e0 = plan_panel(points, None, cfg, 200, ranges)
         a_left = float(meta["width"]) / float(meta["height"])
         a_right = (e0[1] - e0[0]) / (e0[3] - e0[2])
         panel_h = int((width - 2 * margin - gutter) / (a_left + a_right))
     left, _, frame = insitu_panel(Path(meta["video"]), run_dir, cfg, float(meta["fps"]), panel_h,
                                   frame)
-    right, ext = plan_panel(points, raster, cfg, panel_h, g.speed_range)
+    right, ext = plan_panel(points, raster, cfg, panel_h, ranges)
     W = margin * 2 + left.shape[1] + gutter + right.shape[1]
     H = top + panel_h + bottom
     canvas = Image.new("RGB", (W, H), BG)
@@ -307,9 +326,15 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
     # figures row
     y0 = top + panel_h + 90
     d.line([(margin, y0 - 40), (W - margin, y0 - 40)], fill=HAIR, width=2)
-    med = float(summary["mean_speed"].median())
-    figures = [("TRACKS", f"{len(summary)}"),
-               ("MEDIAN SPEED", f"{med:.2f} m/s" + (f"  ·  {med * 3.6:.0f} km/h" if group == "vehicles" else ""))]
+    def med_text(gname):
+        med = float(summary.loc[summary["group"] == gname, "mean_speed"].median())
+        return f"{med:.2f} m/s" + (f"  ·  {med * 3.6:.0f} km/h" if gname == "vehicles" else "")
+
+    if len(groups) == 1:
+        figures = [("TRACKS", f"{len(summary)}"), ("MEDIAN SPEED", med_text(groups[0]))]
+    else:  # one figure per group: count and median speed
+        figures = [(g_.upper(), f"{int((summary['group'] == g_).sum())}  ·  {med_text(g_)}")
+                   for g_ in groups]
     lines = [cl for cl in stats.get("count_lines", [])
              if cl["crossings_left_to_right"] + cl["crossings_right_to_left"] > 0]
     if lines:
@@ -322,7 +347,7 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
 
     # legend first (right-aligned), figures share the space to its left
     lw = 480
-    lx, ly = W - margin - lw, y0 + 70
+    lx = W - margin - lw
     avail = lx - 120 - margin
     widths = [max(d.textlength(v, font=_font(50)), d.textlength(lab, font=_font(22)) * 1.3)
               for lab, v in figures]
@@ -333,16 +358,20 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
         _text(d, (x, y0 + 44), value, 50, "Light", INK, tracking=0.02)
         x += wv + gap
 
-    # legend: hairline gradient
-    grad = speed_rgb(np.linspace(*g.speed_range, lw), *g.speed_range).astype(np.uint8)
-    canvas.paste(Image.fromarray(np.repeat(grad[None], 6, axis=0)), (lx, ly))
-    _text(d, (lx, y0), "SPEED", 22, "SemiLight", GREY, tracking=0.3)
-    _text(d, (lx, ly + 22), f"{g.speed_range[0]:g}", 24, "Light", GREY)
-    hi_lbl = f"{g.speed_range[1]:g} m/s"
-    hw = d.textlength(hi_lbl, font=_font(24))
-    _text(d, (lx + lw - hw, ly + 22), hi_lbl, 24, "Light", GREY)
-    _text(d, (margin, H - 95), "Trails: every tracked "
-          + ("person" if group == "people" else "vehicle")
+    # legend: one hairline gradient per group, each track is coloured on its group's scale
+    for k, (gname, (lo, hi)) in enumerate(ranges.items()):
+        yk = y0 + k * 80
+        grad = speed_rgb(np.linspace(lo, hi, lw), lo, hi).astype(np.uint8)
+        canvas.paste(Image.fromarray(np.repeat(grad[None], 6, axis=0)), (lx, yk + 70))
+        _text(d, (lx, yk), "SPEED" + (f"  ·  {gname.upper()}" if len(ranges) > 1 else ""), 22,
+              "SemiLight", GREY, tracking=0.3)
+        _text(d, (lx, yk + 92), f"{lo:g}", 24, "Light", GREY)
+        hi_lbl = f"{hi:g} m/s"
+        hw = d.textlength(hi_lbl, font=_font(24))
+        _text(d, (lx + lw - hw, yk + 92), hi_lbl, 24, "Light", GREY)
+    nouns = [GROUP_NOUN.get(g_, g_) for g_ in groups]
+    who = nouns[0] if len(nouns) == 1 else ", ".join(nouns[:-1]) + " and " + nouns[-1]
+    _text(d, (margin, H - 95), "Trails: every tracked " + who
           + " of the clip, coloured by measured speed. People are blurred."
           + (f" Imagery: {credit.rstrip('.')}." if credit else ""), 22, "Light", (96, 96, 100),
           tracking=0.02)

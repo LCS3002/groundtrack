@@ -201,7 +201,11 @@ class App:
             try:
                 h = Homography.load(hp)
                 cal.update(rmse_m=h.rmse_m, n_points=len(h.points or []),
-                           frame=h.reference_frame, camera=getattr(h, "camera_params", None))
+                           frame=h.reference_frame, camera=getattr(h, "camera_params", None),
+                           method=getattr(h, "method", "points"))
+                auto = hp.with_name(hp.stem + "_auto.json")
+                if auto.exists():
+                    cal["auto_candidate"] = str(auto)
             except Exception as e:
                 cal["error"] = str(e)
             checks = []
@@ -305,11 +309,13 @@ class App:
                 args += ["--time", str(float(opts["time"]))]
         elif kind == "roi":
             args = ["roi", "-c", rel]
+        elif kind == "autocalibrate":
+            args = ["autocalibrate", "-c", rel] + (["--replace"] if opts.get("replace") else [])
         elif kind == "device":
             args = ["device"]
         else:
             raise ValueError(f"unknown job {kind!r}")
-        heavy = {"run", "process", "debug-video"}
+        heavy = {"run", "process", "debug-video", "autocalibrate"}
         if kind in heavy and any(j.kind in heavy and j.status == "running"
                                  for j in self.jobs.values()):
             raise ValueError("another run is still going: wait for it or stop it first")

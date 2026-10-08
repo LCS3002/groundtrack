@@ -148,7 +148,71 @@ def _legend(img, cfg: Config, groups):
         y += 46
 
 
-def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: GeoRaster | None,
+class _ParticleField:
+    """Particles advected through one vector field, coloured on that field's speed scale."""
+
+    N_BINS = 24
+
+    def __init__(self, field: pd.DataFrame, cell: float, speed_range, min_conf: float, rng):
+        from .field import field_to_arrays
+
+        self.cell, self.min_conf, self.rng = cell, min_conf, rng
+        self.xs, self.ys, U, V, _, self.C = field_to_arrays(field, cell)
+        self.U, self.V = np.nan_to_num(U), np.nan_to_num(V)
+        self.jj, self.ii = np.nonzero(self.C >= min_conf)
+        self.n_cells = len(self.ii)
+        self.ok = self.n_cells > 0
+        if self.ok:
+            w = self.C[self.jj, self.ii]
+            self.weights = w / w.sum()
+        self.lo, self.hi = speed_range
+        self.cols = (ramp_rgb(np.linspace(self.lo, self.hi, self.N_BINS), self.lo, self.hi)
+                     [:, ::-1] * 255).tolist()
+
+    def sample(self, arr, px, py):  # bilinear lookup at world positions
+        from scipy.ndimage import map_coordinates
+
+        fi = (px - self.xs[0]) / self.cell
+        fj = (py - self.ys[0]) / self.cell
+        return map_coordinates(arr, [fj, fi], order=1, mode="constant", cval=0.0)
+
+    def spawn(self, k):
+        pick = self.rng.choice(self.n_cells, size=k, p=self.weights)
+        return (self.xs[self.ii[pick]] + self.rng.uniform(-0.5, 0.5, k) * self.cell,
+                self.ys[self.jj[pick]] + self.rng.uniform(-0.5, 0.5, k) * self.cell,
+                self.rng.uniform(1.5, 4.0, k))
+
+    def start(self, n):
+        self.px, self.py, self.life = self.spawn(n)
+        self.age = self.rng.uniform(0, 1, n) * self.life
+
+    def step(self, trails, dt, time_scale, ext, sx, sy, th):
+        x0, x1, y0, y1 = ext
+        px, py = self.px, self.py
+        u, v = self.sample(self.U, px, py), self.sample(self.V, px, py)
+        # midpoint (RK2) step for smooth curves
+        mx, my = px + 0.5 * u * dt, py + 0.5 * v * dt
+        u2, v2 = self.sample(self.U, mx, my), self.sample(self.V, mx, my)
+        nx, ny = px + u2 * dt, py + v2 * dt
+        spd = np.hypot(u2, v2)
+        p0 = np.column_stack([(px - x0) * sx, (y1 - py) * sy])
+        p1 = np.column_stack([(nx - x0) * sx, (y1 - ny) * sy])
+        segs = np.stack([p0, p1], axis=1).round().astype(np.int32)    # (n, 2, 2)
+        k = np.clip(((spd - self.lo) / max(self.hi - self.lo, 1e-9) * (self.N_BINS - 1))
+                    .round().astype(int), 0, self.N_BINS - 1)
+        for b in np.unique(k):                                      # one draw call per colour
+            cv2.polylines(trails, list(segs[k == b].reshape(-1, 2, 1, 2)), False, self.cols[b],
+                          th, cv2.LINE_AA)
+        self.px, self.py, self.age = nx, ny, self.age + dt / time_scale
+        conf = self.sample(self.C, self.px, self.py)
+        dead = (self.age > self.life) | (conf < self.min_conf * 0.6) | (self.px < x0) | \
+               (self.px > x1) | (self.py < y0) | (self.py > y1)
+        if dead.any():
+            self.px[dead], self.py[dead], self.life[dead] = self.spawn(int(dead.sum()))
+            self.age[dead] = 0.0
+
+
+def render_flowfield_video(field, points: pd.DataFrame, raster: GeoRaster | None,
                            cfg: Config, out_path: Path, ext, cell: float, speed_range,
                            seconds: float = 12.0, fps: float = 30.0, width: int = 1920,
                            n_particles: int | None = None, time_scale: float = 1.0,
@@ -156,13 +220,15 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
                            clean_path: Path | None = None) -> None:
     """flowfield.mp4: particles streaming through the smoothed vector field over the map
     (the same field houdini_field.py hands to a particle sim), coloured by speed.
+
+    field: one field (DataFrame) with speed_range, or a list of (field, speed_range) - one
+    per group, so people and vehicles each stream through their own field and colour scale.
     clean_path also writes the same video without any labels."""
-    from scipy.ndimage import map_coordinates
     from tqdm import tqdm
 
-    from .field import field_to_arrays
-
-    if field.empty:
+    layers_in = field if isinstance(field, list) else [(field, speed_range)]
+    layers_in = [(f, r) for f, r in layers_in if f is not None and not f.empty]
+    if not layers_in:
         log("flow-field video: empty field")
         return
     vis = cfg["visuals"]
@@ -170,37 +236,18 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
     H, W = base.shape[:2]
     x0, x1, y0, y1 = ext
     sx, sy = W / (x1 - x0), H / (y1 - y0)
-    xs, ys, U, V, S, C = field_to_arrays(field, cell)
-    U, V = np.nan_to_num(U), np.nan_to_num(V)
-    gx0, gy0 = xs[0], ys[0]
-
-    def sample(arr, px, py):  # bilinear lookup at world positions
-        fi = (px - gx0) / cell
-        fj = (py - gy0) / cell
-        return map_coordinates(arr, [fj, fi], order=1, mode="constant", cval=0.0)
-
     rng = np.random.default_rng(seed)
-    jj, ii = np.nonzero(C >= min_confidence)
-    if len(ii) == 0:
+    layers = [_ParticleField(f, cell, r, min_confidence, rng) for f, r in layers_in]
+    layers = [lay for lay in layers if lay.ok]
+    if not layers:
         log("flow-field video: no confident cells")
         return
-    area = len(ii) * cell * cell
-    n = n_particles or int(np.clip(area / (cell * cell) * 1.5, 800, 6000))
-    weights = C[jj, ii] / C[jj, ii].sum()
-
-    def spawn(k):
-        pick = rng.choice(len(ii), size=k, p=weights)
-        return (xs[ii[pick]] + rng.uniform(-0.5, 0.5, k) * cell,
-                ys[jj[pick]] + rng.uniform(-0.5, 0.5, k) * cell,
-                rng.uniform(1.5, 4.0, k))
-
-    px, py, life = spawn(n)
-    age = rng.uniform(0, 1, n) * life
+    total = n_particles or int(np.clip(sum(lay.n_cells for lay in layers) * 1.5, 800, 6000))
+    n_cells = sum(lay.n_cells for lay in layers)
+    for lay in layers:                          # particles in proportion to each field's area
+        lay.start(max(100, int(total * lay.n_cells / n_cells)))
     trails = np.zeros((H, W, 3), np.uint8)
     base_u8 = np.clip(base, 0, 255).astype(np.uint8)
-    lo, hi = speed_range
-    n_bins = 24
-    bin_cols = (ramp_rgb(np.linspace(lo, hi, n_bins), lo, hi)[:, ::-1] * 255).tolist()
     dt = time_scale / fps
     th = max(1, int(round(W / 1100)))
     from .video import VideoSink
@@ -209,32 +256,14 @@ def render_flowfield_video(field: pd.DataFrame, points: pd.DataFrame, raster: Ge
     clean = VideoSink(clean_path, fps, (W, H)) if clean_path else None
     for _ in tqdm(range(int(seconds * fps)), desc="flow-field video", unit="frame",
                   mininterval=2.0):
-        u, v = sample(U, px, py), sample(V, px, py)
-        # midpoint (RK2) step for smooth curves
-        mx, my = px + 0.5 * u * dt, py + 0.5 * v * dt
-        u2, v2 = sample(U, mx, my), sample(V, mx, my)
-        nx, ny = px + u2 * dt, py + v2 * dt
-        spd = np.hypot(u2, v2)
         trails = cv2.convertScaleAbs(trails, alpha=0.93)          # fade older trail pieces
-        p0 = np.column_stack([(px - x0) * sx, (y1 - py) * sy])
-        p1 = np.column_stack([(nx - x0) * sx, (y1 - ny) * sy])
-        segs = np.stack([p0, p1], axis=1).round().astype(np.int32)    # (n, 2, 2)
-        k = np.clip(((spd - lo) / max(hi - lo, 1e-9) * (n_bins - 1)).round().astype(int),
-                    0, n_bins - 1)
-        for b in np.unique(k):                                      # one draw call per colour
-            cv2.polylines(trails, list(segs[k == b].reshape(-1, 2, 1, 2)), False, bin_cols[b],
-                          th, cv2.LINE_AA)
-        px, py, age = nx, ny, age + dt / time_scale
-        conf = sample(C, px, py)
-        dead = (age > life) | (conf < min_confidence * 0.6) | (px < x0) | (px > x1) | \
-               (py < y0) | (py > y1)
-        if dead.any():
-            px[dead], py[dead], life[dead] = spawn(int(dead.sum()))
-            age[dead] = 0.0
+        for lay in layers:
+            lay.step(trails, dt, time_scale, (x0, x1, y0, y1), sx, sy, th)
         img = cv2.add(base_u8, trails)                              # light on a dark map
         if clean is not None:
             clean.write(img)
-        cv2.putText(img, f"{cfg.site}: smoothed vector field", (16, 34), cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(img, f"{cfg.site}: smoothed vector field", (16, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX,
                     0.8, (255, 255, 255), 2, cv2.LINE_AA)
         bl = int(_nice(x1 - x0) * sx)
         cv2.rectangle(img, (14, H - 44), (30 + bl, H - 12), (240, 240, 240), -1)

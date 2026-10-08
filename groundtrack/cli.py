@@ -105,6 +105,17 @@ def cmd_calibrate(args):
                     warn_m=args.warn_m, camera_prior=cfg.get("camera_position"))
 
 
+def cmd_autocalibrate(args):
+    from .autocal import run_autocalibration
+
+    cfg = _cfg(args)
+    run_dir = _run_dir_arg(cfg, args.run) if args.run else None
+    rep = run_autocalibration(cfg, run_dir=run_dir, device=cfg["device"], replace=args.replace,
+                              track_frames=args.frames)
+    if rep.get("result") is None:
+        raise SystemExit(1)
+
+
 def cmd_roi(args):
     from .calibrate import pick_roi
 
@@ -301,6 +312,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="RANSAC inlier threshold in m (far points are less precise; keep >= 1)")
     s.add_argument("--warn-m", type=float, default=0.5, help="warn if RMSE exceeds this (m)")
     s.set_defaults(func=cmd_calibrate)
+
+    s = common(sub.add_parser("autocalibrate",
+                              help="calibrate without clicking (same spot / vehicles on roads)"))
+    s.add_argument("--run", help="use this tracked run (default: the latest, else track first)")
+    s.add_argument("--frames", type=int, default=900, help="frames to track if there is no run")
+    s.add_argument("--replace", action="store_true",
+                   help="write over the existing calibration (a backup is kept)")
+    s.set_defaults(func=cmd_autocalibrate)
 
     s = common(sub.add_parser("roi", help="draw a region-of-interest polygon on the video"))
     s.add_argument("--frame", type=int, default=None, help="default: the calibration frame")
