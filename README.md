@@ -374,8 +374,8 @@ Defaults that matter, with suggested values per site:
 | setting | plaza | motorway | why |
 |---|---|---|---|
 | `detection.model` | `yolo26m.pt` | `yolo26m.pt` | `l`/`x` find more small, far objects but run slower |
-| `detection.imgsz` | 1920 | 1920 | larger = smaller objects found. Measured on a plaza clip: 1920 found 34 % more people than 1280 (17 % more tracks) at the same speed |
-| `detection.conf` | 0.25 | 0.2 | measured on a high-rise clip: 0.2 found 21 % more vehicles than 0.3, with longer tracks; BoT-SORT vs ByteTrack and longer `track_buffer_s` made no clear difference |
+| `detection.imgsz` | 1920 | 1920 | larger = smaller objects found. Measured: 1920 found 34 % more people than 1280 on a plaza clip filmed from steps (17 % more tracks) and 13 % more on a full eye-level clip, at about the same speed |
+| `detection.conf` | 0.25 | 0.2 | measured on a full high-rise clip: 0.2 found 19 % more vehicles than 0.3, with 42 % longer unbroken tracks; BoT-SORT vs ByteTrack and a longer `track_buffer_s` made no clear difference |
 | `detection.tracker` | `botsort` | `bytetrack` | both work; BoT-SORT is a little steadier in crowds |
 | `detection.track_buffer_s` | 1.5 | 1.0 | how long a lost object is predicted before it's dropped |
 | `groups.*.speed_range` | people 0–2.5 m/s | vehicles 0–35 m/s | colour ramp limits |
