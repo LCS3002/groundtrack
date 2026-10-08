@@ -197,6 +197,19 @@ It tries, in this order:
 4. Then it **checks** the result against the footage: people's height, and the share of
    vehicles on mapped roads.
 
+**With 4 or more clicked points it measures instead of guessing:** every method that applies
+(your clicks alone; clicks + walking people; clicks + vehicles on roads; clicks + the clicks of
+other clips filmed from the same spot) is fitted again and again, each time hiding one of your
+points, and the method whose fits land the hidden points closest wins. On this project:
+
+| clip | your clicks alone | best method | hidden point lands |
+|---|---|---|---|
+| plaza1 | 1.66 m | + walking people | **0.89 m** |
+| motorway2 | 7.00 m | + 2 clicks of motorway5 (same spot) | 6.05 m |
+| motorway3 | 4.77 m | + vehicles on roads | 4.55 m |
+| motorway5 | 3.59 m | + vehicles on roads | 3.38 m |
+| motorway6, plaza2, plaza3 | 3.42 / 2.94 / 0.41 m | your clicks | (kept) |
+
 A calibration you clicked is never overwritten: the automatic one is saved next to it as
 `<name>_auto.json` with its own check image, and `--replace` switches to it (keeping a
 backup). The UI has the same as a button.

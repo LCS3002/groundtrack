@@ -858,6 +858,58 @@ def _road_cache(out: Path, prior: dict) -> Path:
     return out.parent / f"osm_roads_{round(prior['E'], -2):.0f}_{round(prior['N'], -2):.0f}.json"
 
 
+def best_by_cross_validation(raw, size, prior: dict, clicks, reg, out: Path, log=print,
+                             pooled: dict | None = None):
+    """With 4+ clicked points: fit every method that applies, keep the one that predicts the
+    held-out clicks best (leave-one-out). Returns (homography, {method: median error m}).
+
+    pooled: {site: (px, world)} clicks of other clips filmed from the same spot, already
+    mapped into this frame; they are only ever used for fitting, never as held-out points."""
+    from .posefit import camera_calibration
+
+    px, world = (np.asarray(a, float).reshape(-1, 2) for a in clicks)
+    quiet = lambda *_: None  # noqa: E731
+
+    def clicked(p, w):
+        return camera_calibration(p, w, size, prior)
+
+    methods = {"clicked points": clicked}
+    if pooled:
+        pp = np.vstack([v[0] for v in pooled.values()])
+        pw = np.vstack([v[1] for v in pooled.values()])
+        names = ", ".join(pooled)
+        methods[f"clicked points + {len(pp)} clicks of {names} (same spot)"] = \
+            lambda p, w: clicked(np.vstack([p, pp]), np.vstack([w, pw]))
+    if raw["class"].isin(["car", "bus", "truck"]).sum() >= 100:
+        ways = osm_roads(prior["E"], prior["N"], cache=_road_cache(out, prior))
+        methods["clicked points + vehicles on roads"] = lambda p, w: fit_to_roads(
+            raw, size, prior, ways, reg, log=quiet, clicks=(p, w), search=False,
+            extra_starts=[clicked(p, w).camera_params])[0]
+    if (raw["class"] == "person").sum() >= 300:
+        rings = osm_obstacles(prior["E"], prior["N"], cache=_obstacle_cache(out, prior))
+        methods["clicked points + walking people"] = lambda p, w: fit_to_people(
+            raw, size, prior, rings, reg, log=quiet, clicks=(p, w),
+            extra_starts=[clicked(p, w).camera_params])[0]
+    scores = {}
+    for name, fit in methods.items():
+        errs = []
+        for k in range(len(px)):
+            keep = np.arange(len(px)) != k
+            try:
+                hk = fit(px[keep], world[keep])
+                e = float(np.linalg.norm(hk.to_world(px[k:k + 1])[0] - world[k]))
+            except Exception:      # a method that cannot fit counts as a miss
+                e = float("nan")
+            errs.append(e if np.isfinite(e) else 50.0)          # beyond the horizon = miss
+        scores[name] = round(float(np.median(errs)), 3)
+        log(f"  {name}: a hidden clicked point lands {scores[name]:.2f} m off (median)")
+    best = min(scores, key=scores.get)
+    h = methods[best](px, world)
+    h.method = f"{best} (best of {len(scores)} by leave-one-out)"
+    h.method_info = {"leave_one_out_median_m": scores}
+    return h, scores
+
+
 def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str = "auto",
                         replace: bool = False, track_frames: int = 900) -> dict:
     """Calibrate a site without clicking, as far as the footage allows. Returns the report.
@@ -888,6 +940,7 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
 
     # 1. same spot ---------------------------------------------------------------------
     best = None
+    same_spot_clicks: dict = {}
     for other in sorted(cfg.base_dir.glob("*.yaml")):
         try:
             oc = load_config(other)
@@ -902,12 +955,33 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
                                or abs(ocam["height_m"] - prior["height_m"]) > 10):
             continue                                  # a different camera position
         hs = Homography.load(op)
-        hh, info = transfer(hs, read_frame(ov, hs.reference_frame), frame, prior,
-                            log=lambda *_: None)
+        src_frame = read_frame(ov, hs.reference_frame)
+        hh, info = transfer(hs, src_frame, frame, prior, log=lambda *_: None)
         info["from"] = oc.site
         report["tried"].append(info)
         if hh is not None and (best is None or info["inliers"] > best[1]["inliers"]):
             best = (hh, info)
+        # its clicked points, seen in this frame (for pooling when this clip has clicks too)
+        o_csv = op.with_name(op.stem + "_points.csv")
+        if hh is not None and info["inliers"] >= 100 and o_csv.exists():
+            from .calibrate import load_points_csv
+
+            Hm, _, _ = match_frames(frame, src_frame)          # this frame -> other frame
+            if Hm is not None:
+                opx, ow = load_points_csv(o_csv)
+                q = cv2.perspectiveTransform(opx.reshape(-1, 1, 2).astype(np.float64),
+                                             np.linalg.inv(Hm)).reshape(-1, 2)
+                inside = (q[:, 0] >= 0) & (q[:, 0] < size[0]) & (q[:, 1] >= 0) & (q[:, 1] < size[1])
+                if inside.sum() >= 2:
+                    same_spot_clicks[oc.site] = (q[inside], ow[inside])
+    own_csv = out.with_name(out.stem + "_points.csv")
+    own_clicks = 0
+    if own_csv.exists():
+        from .calibrate import load_points_csv
+
+        own_clicks = len(load_points_csv(own_csv)[0])
+    if own_clicks >= 4:
+        best = None            # its own clicks are evidence: pool, don't replace (below)
     if best and best[1]["inliers"] >= 100 and best[1]["inlier_ratio"] >= 0.3:
         h, chosen = best
         h.method = f"same spot (from {chosen['from']})"
@@ -935,6 +1009,22 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
     n_veh = 0 if raw is None else int(raw["class"].isin(["car", "bus", "truck"]).sum())
     n_ppl = 0 if raw is None else int((raw["class"] == "person").sum())
     pts_csv = out.with_name(out.stem + "_points.csv")
+
+    # with 4+ clicked points: measure which method predicts unseen clicks best
+    from .calibrate import load_points_csv
+
+    clicks_all = load_points_csv(pts_csv) if pts_csv.exists() else None
+    if h is None and prior and raw is not None and clicks_all is not None \
+            and len(clicks_all[0]) >= 4:
+        log(f"{len(clicks_all[0])} clicked points: comparing methods by leaving each point out")
+        h, scores = best_by_cross_validation(raw, size, prior, clicks_all, reg, out, log=log,
+                                             pooled=same_spot_clicks or None)
+        report["cross_validation"] = scores
+        if h.method.startswith("clicked points (") and out.exists():
+            log("your clicked calibration is already the best of these: nothing to change")
+            report["result"] = str(out)
+            report["best"] = "clicked points"
+            return report
 
     # 2. vehicles on roads -------------------------------------------------------------
     if h is None:

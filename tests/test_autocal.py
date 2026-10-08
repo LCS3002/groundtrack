@@ -186,3 +186,32 @@ def test_picker_with_two_points_defers_to_autocalibrate(tmp_path):
                           log=lambda *_: None)
     assert res is None and not out.exists()
     assert len(load_points_csv(out.with_name("x_homography_points.csv"))[0]) == 2
+
+
+def test_cross_validation_picks_and_pools(tmp_path):
+    """4+ clicks: methods are compared on held-out clicks; same-spot clicks only train."""
+    from groundtrack.autocal import best_by_cross_validation
+
+    cam = SyntheticCamera(width=1280, height=720, f=1400.0, height_m=30.0, pitch_deg=25.0,
+                          yaw_deg=20.0, cam_local=(0.0, 0.0))
+    rng = np.random.default_rng(2)
+    fwd = np.array([math.sin(math.radians(20)), math.cos(math.radians(20))])
+    side = np.array([fwd[1], -fwd[0]])
+    ground = np.array([cam.C[:2] + fwd * d + side * s
+                       for d, s in ((50, -15), (60, 10), (80, -5), (95, 20), (120, 0))])
+    own = (cam.ground_to_pixel(ground) + rng.normal(0, 1.5, (5, 2)), ground)
+    extra_g = np.array([cam.C[:2] + fwd * d + side * s for d, s in ((55, 25), (100, -20),
+                                                                     (70, 0))])
+    pooled = {"other": (cam.ground_to_pixel(extra_g), extra_g)}
+    raw = pd.DataFrame(columns=["track_id", "class", "frame", "time_s", "x1", "y1", "x2", "y2",
+                                "predicted"])
+    prior = {"E": ORIGIN[0], "N": ORIGIN[1], "height_m": 30.0, "position_tol_m": 5,
+             "height_tol_m": 3}
+    h, scores = best_by_cross_validation(raw, (1280, 720), prior, own, None,
+                                         tmp_path / "x_homography.json", log=lambda *_: None,
+                                         pooled=pooled)
+    assert "clicked points" in scores and any("same spot" in k for k in scores)
+    assert all(np.isfinite(v) for v in scores.values())
+    check = np.array([cam.C[:2] + fwd * d for d in (60, 90)])
+    err = np.linalg.norm(h.to_world(cam.ground_to_pixel(check)) - check, axis=1)
+    assert err.max() < 1.0
