@@ -165,6 +165,10 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
         visuals.plot_flow_field(field, sel, raster, cfg, png, float(cfg["field"]["cell_size_m"]),
                                 rng, label)
         out[png.stem] = png
+    lanes = _lanes_check(points, raster, log)
+    if lanes:
+        stats["tracking_check"] = lanes
+        out["stats_json"].write_text(json.dumps(stats, indent=2), encoding="utf-8")
     clean = _clean_videos(cfg)
     if cfg["visuals"].get("topdown_video", True) and len(points):
         from .animation import render_topdown_video
@@ -219,6 +223,26 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
 def _clean_videos(cfg: Config) -> bool:
     """Frameless outputs (images/, labels/, *_clean.mp4) are on unless package.enabled: false."""
     return bool((cfg.get("package") or {}).get("enabled", True))
+
+
+def _lanes_check(points: pd.DataFrame, raster, log) -> dict | None:
+    """Vehicle tracks against the painted lanes in the aerial (rotation + sideways scatter)."""
+    if raster is None or not len(points) or "vehicles" not in set(points["group"]):
+        return None
+    try:
+        from .autocal import lane_check
+
+        chk = lane_check(points, raster)
+    except Exception as e:  # a check must never break a run
+        log(f"  lane check skipped: {e}")
+        return None
+    if chk:
+        rot = chk["rotation_vs_painted_lanes_deg"]
+        log(f"  tracking check: straight tracks run {rot:+.1f}° off the painted lanes "
+            f"(median |{chk['abs_angle_vs_lanes_deg']:.1f}°|), sideways scatter "
+            f"{chk['sideways_scatter_cm']:.0f} cm" + (" -> consistent" if abs(rot) <= 1.5 else
+                                                      " -> CHECK the calibration direction"))
+    return chk
 
 
 def _roads_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:

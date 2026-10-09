@@ -611,6 +611,15 @@ RMS. Real footage will be worse; that's what this check is for.
   speed from an implausible 1.8 m/s down to 1.2 m/s, and cut impossible jumps by 90 %.
   `max_range_m: auto` (the template default) works it out per group from the calibrated camera:
   people are kept while one pixel is under 0.25 m of depth, cycles 0.4 m, vehicles 1 m.
+* **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
+  markings to ~10 cm. Every run with vehicles compares each long, straight track with the
+  lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as
+  one consistent sign, and the sideways scatter of straight tracks is an upper bound on
+  position noise. On this project's motorway clips the hand calibrations ran 0.7–2.2° off
+  the lanes; after the leave-one-out method choice 0.1–0.9°. Straight tracks scatter
+  sideways by a median 23–79 cm (gentle curves count as scatter too). The check uses
+  direction-unbiased Gaussian derivatives: a plain Sobel filter is off by up to 0.8°, as much
+  as the effect being measured (`test_lane_check_measures_a_known_rotation`).
 * **People check.** Every walking person is a measuring stick. Each run computes how tall the
   detected people would have to be under the calibration, writes it to `stats.json`
   (`calibration_check`) and logs it. About 1.7 m means the calibration is consistent. A large

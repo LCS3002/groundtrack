@@ -839,6 +839,105 @@ def quality_checks(h: Homography, raw: pd.DataFrame, cfg, registration: dict | N
     return {"checks": checks, "verdict": verdict}
 
 
+# --------------------------------------------------------------------------- 5. lanes
+class LaneField:
+    """Direction of the painted lines / kerbs in the aerial (structure tensor), per ground
+    point: (direction in degrees from +E, 0-180; coherence 0-1, high on clear lines)."""
+
+    def __init__(self, raster, ext, res: float = 0.25, line_sigma_m: float = 0.3,
+                 window_m: float = 3.0):
+        from scipy.ndimage import map_coordinates  # noqa: F401  (used in sample)
+
+        x0, x1, y0, y1 = ext
+        self.x0, self.y1, self.res = x0, y1, res
+        w, h = max(int((x1 - x0) / res), 2), max(int((y1 - y0) / res), 2)
+        c0, r0 = raster.world_to_pixel([[x0, y1]])[0]
+        c1, r1 = raster.world_to_pixel([[x1, y0]])[0]
+        M = np.array([[(c1 - c0) / w, 0, c0], [0, (r1 - r0) / h, r0]], np.float32)
+        gray = raster.image if raster.image.ndim == 2 else \
+            cv2.cvtColor(raster.image, cv2.COLOR_RGB2GRAY)
+        g = cv2.warpAffine(gray, M, (w, h),
+                           flags=cv2.INTER_AREA | cv2.WARP_INVERSE_MAP).astype(np.float32)
+        # Gaussian derivatives: direction-unbiased (Sobel is off by up to ~0.8 deg between
+        # the 45 deg multiples, as large as the effects this measures)
+        from scipy.ndimage import gaussian_filter
+
+        sg = max(line_sigma_m / res, 1.0)
+        gx = gaussian_filter(g, sg, order=(0, 1))
+        gy = gaussian_filter(g, sg, order=(1, 0))
+        s = window_m / res
+        jxx = cv2.GaussianBlur(gx * gx, (0, 0), s)
+        jyy = cv2.GaussianBlur(gy * gy, (0, 0), s)
+        jxy = cv2.GaussianBlur(gx * gy, (0, 0), s)
+        coherence = np.sqrt((jxx - jyy) ** 2 + 4 * jxy ** 2) / (jxx + jyy + 1e-6)
+        line = 0.5 * np.arctan2(2 * jxy, jxx - jyy) + np.pi / 2       # image coords, y down
+        angle = np.degrees(np.arctan2(-np.sin(line), np.cos(line))) % 180
+        t2 = np.radians(2 * angle)                    # doubled angle: interpolates cleanly
+        self.c2 = (np.cos(t2) * coherence).astype(np.float32)
+        self.s2 = (np.sin(t2) * coherence).astype(np.float32)
+        self.shape = g.shape
+
+    def sample(self, xy):
+        from scipy.ndimage import map_coordinates
+
+        c = (xy[:, 0] - self.x0) / self.res
+        r = (self.y1 - xy[:, 1]) / self.res
+        ok = (c >= 0) & (r >= 0) & (c < self.shape[1] - 1) & (r < self.shape[0] - 1)
+        rr, cc = np.where(ok, r, 0), np.where(ok, c, 0)
+        c2 = map_coordinates(self.c2, [rr, cc], order=1)
+        s2 = map_coordinates(self.s2, [rr, cc], order=1)
+        return (np.where(ok, np.degrees(0.5 * np.arctan2(s2, c2)) % 180, np.nan),
+                np.where(ok, np.hypot(c2, s2), 0.0))
+
+
+def lane_check(points: pd.DataFrame, raster, min_len_m: float = 25.0) -> dict | None:
+    """Real-footage check against the aerial: do straight vehicle tracks run parallel to the
+    painted lanes (a calibration rotation shows as one sign), and how much do they scatter
+    sideways around a straight line (an upper bound on position noise)?"""
+    p = points[(points["group"] == "vehicles") & ~points["predicted"].astype(bool)]
+    if p.empty or raster is None:
+        return None
+    rows = []
+    for _, t in p.groupby("track_id"):
+        xy = t.sort_values("frame")[["x", "y"]].to_numpy(float)
+        if len(xy) < 10:
+            continue
+        d = xy[-1] - xy[0]
+        L = float(np.hypot(*d))
+        path = float(np.sum(np.hypot(*np.diff(xy, axis=0).T)))
+        if L < min_len_m or L / max(path, 1e-6) < 0.97:
+            continue
+        c = xy.mean(axis=0)
+        vt = np.linalg.svd(xy - c, full_matrices=False)[2]
+        rows.append((xy, d, float(np.sqrt(np.mean(((xy - c) @ vt[1]) ** 2)))))
+    if len(rows) < 5:
+        return None
+    allxy = np.vstack([r[0] for r in rows])
+    ext = (allxy[:, 0].min() - 20, allxy[:, 0].max() + 20,
+           allxy[:, 1].min() - 20, allxy[:, 1].max() + 20)
+    field = LaneField(raster, ext)
+    ang = []
+    for xy, d, _ in rows:
+        a, coh = field.sample(xy)
+        ok = coh > 0.5
+        if ok.sum() < 3:
+            continue
+        t2 = np.radians(2 * a[ok])
+        lane = math.degrees(0.5 * math.atan2(np.sin(t2).mean(), np.cos(t2).mean())) % 180
+        ang.append((math.degrees(math.atan2(d[1], d[0])) % 180 - lane + 90) % 180 - 90)
+    if len(ang) < 5:
+        return None
+    ang = np.array(ang)
+    scatter = np.array([r[2] for r in rows])
+    return {"straight_vehicle_tracks": int(len(ang)),
+            "rotation_vs_painted_lanes_deg": round(float(np.median(ang)), 2),
+            "abs_angle_vs_lanes_deg": round(float(np.median(np.abs(ang))), 2),
+            "sideways_scatter_cm": round(float(100 * np.median(scatter)), 1),
+            "note": "tracks vs the lane markings in the aerial; a calibration rotation shows as "
+                    "a consistent sign. Sideways scatter of straight tracks is an upper bound "
+                    "on position noise."}
+
+
 # --------------------------------------------------------------------------- orchestration
 def _latest_run(cfg) -> Path | None:
     from .layout import Run

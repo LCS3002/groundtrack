@@ -215,3 +215,35 @@ def test_cross_validation_picks_and_pools(tmp_path):
     check = np.array([cam.C[:2] + fwd * d for d in (60, 90)])
     err = np.linalg.norm(h.to_world(cam.ground_to_pixel(check)) - check, axis=1)
     assert err.max() < 1.0
+
+
+def test_lane_check_measures_a_known_rotation():
+    """Painted lines at 30 deg, vehicles driving at 32 deg -> the check reports +2 deg."""
+    from groundtrack.autocal import lane_check
+    from groundtrack.geo import GeoRaster
+
+    res, n = 0.1, 2000                                     # 200 m x 200 m at 10 cm
+    img = np.full((n, n, 3), 70, np.uint8)
+    a = math.radians(30)
+    d = np.array([math.cos(a), -math.sin(a)])              # image coords (y down)
+    nrm = np.array([-d[1], d[0]])
+    for k in range(-60, 61):                               # lane lines every 3.5 m
+        c = np.array([n / 2, n / 2]) + nrm * k * 3.5 / res
+        p0, p1 = c - d * 3000, c + d * 3000
+        cv2.line(img, tuple(int(v) for v in p0), tuple(int(v) for v in p1), (230, 230, 230), 2)
+    E0, N0 = ORIGIN
+    raster = GeoRaster(image=img, left=E0 - 100, right=E0 + 100, bottom=N0 - 100,
+                       top=N0 + 100, epsg=27700, native_res=res)
+    rows = []
+    b = math.radians(32)
+    for tid in range(12):
+        start = np.array([E0 - 60, N0 - 50 + tid * 6.0])
+        for f in range(40):
+            x, y = start + f * 2.0 * np.array([math.cos(b), math.sin(b)])
+            rows.append((tid, "car", "vehicles", f, x, y, False))
+    pts = pd.DataFrame(rows, columns=["track_id", "class", "group", "frame", "x", "y",
+                                      "predicted"])
+    chk = lane_check(pts, raster)
+    assert chk is not None
+    assert chk["rotation_vs_painted_lanes_deg"] == pytest.approx(2.0, abs=0.5)
+    assert chk["sideways_scatter_cm"] < 1
