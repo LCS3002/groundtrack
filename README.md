@@ -412,6 +412,14 @@ plate every track is coloured on its own group's speed scale, there is one speed
 group (`labels/legend_speed_<group>_*.png`), and the flow-field video streams each group
 through its own field.
 
+**Trains, trams, metros.** A `trains` group (`classes: [train]`) tracks rail vehicles. They
+often run on viaducts, and a train's box bottom is then on the deck, not on the street: projected
+onto the ground it would land several metres too far away. `plane_height_m` projects a group onto
+a raised plane instead; `auto` (the default for trains) tries heights from 0 to 25 m and keeps the
+one where the tracks line up with the OpenStreetMap rail lines that are above ground (tunnels and
+underground lines are left out). On the DLR beside the A1261 the trains line up with the mapped
+rail at the calibrated surface itself, 2 m median.
+
 ### Vehicle ground point (read this for the motorway)
 
 The bottom-centre of a car's box is where the car's footprint is **closest to the camera**. That
@@ -471,7 +479,7 @@ _working/           tracker output, camera motion, config + calibration snapshot
 | `images/*_layer.png` | the same drawings alone on transparency, to stack in Photoshop / InDesign / Illustrator. All `plan_*` images and layers share one extent and size |
 | `labels/legend_speed`, `legend_density`, `scale_bar`, `north_arrow` | `_light` (white ink, for dark backgrounds) and `_dark`, transparent. The scale bar is drawn at the plan images' pixel scale: resize the two together. `title.txt` holds the plate text |
 | `<site>_plate.png` | the complete plate. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
-| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
+| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot and a thin box (same colour; `debug_video.boxes: false` hides it) at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
 | `videos/topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
 | `videos/flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
 | `videos/*_clean.mp4` | the same videos without clock, legend, scale bar or title |

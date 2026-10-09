@@ -32,6 +32,28 @@ import pandas as pd
 from .homography import Homography, fit_homography
 
 USER_AGENT = "groundtrack (architecture research tool)"
+OVERPASS_MIRRORS = ("https://overpass-api.de/api/interpreter",
+                    "https://lz4.overpass-api.de/api/interpreter",
+                    "https://z.overpass-api.de/api/interpreter",
+                    "https://overpass.kumi.systems/api/interpreter")
+
+
+def _overpass(query: str, timeout: float = 60.0, rounds: int = 2) -> dict:
+    """Run an Overpass query, trying the mirrors in turn (they are often busy)."""
+    import time
+
+    last = None
+    for k in range(rounds):
+        for url in OVERPASS_MIRRORS:
+            try:
+                req = urllib.request.Request(url, data=urllib.parse.urlencode(
+                    {"data": query}).encode(), headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return json.loads(r.read().decode("utf-8"))
+            except OSError as e:          # HTTP 429/5xx, timeouts, DNS
+                last = e
+        time.sleep(5 * (k + 1))
+    raise OSError(f"OpenStreetMap (Overpass) unavailable: {last}")
 PERSON_M = 1.70      # typical adult height
 WALK_M_S = 1.3       # typical free walking speed
 OVERPASS = "https://overpass-api.de/api/interpreter"
@@ -153,10 +175,7 @@ def osm_roads(E: float, N: float, radius_m: float = 1500.0, timeout: float = 60.
                          [E - radius_m, E + radius_m], [N - radius_m, N + radius_m])
     bbox = f"{lat[0]:.6f},{lon[0]:.6f},{lat[1]:.6f},{lon[1]:.6f}"
     q = f'[out:json][timeout:50];way["highway"~"^({ROAD_TYPES})$"]({bbox});out geom;'
-    req = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": q}).encode(),
-                                 headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    data = _overpass(q, timeout)
     ways = []
     for el in data.get("elements", []):
         g = el.get("geometry") or []
@@ -527,10 +546,7 @@ def osm_obstacles(E: float, N: float, radius_m: float = 400.0, timeout: float = 
     q = (f'[out:json][timeout:50];(way["building"]({bbox});relation["building"]({bbox});'
          f'way["natural"="water"]({bbox});relation["natural"="water"]({bbox});'
          f'way["waterway"~"^(dock|riverbank)$"]({bbox}););out geom;')
-    req = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": q}).encode(),
-                                 headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    data = _overpass(q, timeout)
     rings = []
     for el in data.get("elements", []):
         geoms = [el.get("geometry")] if el.get("type") == "way" else \
@@ -945,6 +961,42 @@ def _latest_run(cfg) -> Path | None:
     root = (cfg.path("output_dir") or cfg.base_dir / "runs") / cfg.site
     runs = sorted((p for p in root.glob("*") if Run(p).is_run()), key=lambda p: p.stat().st_mtime)
     return runs[-1] if runs else None
+
+
+def _rail_cache(out: Path, prior: dict) -> Path:
+    return out.parent / (f"osm_rails_visible_{round(prior['E'], -2):.0f}_"
+                         f"{round(prior['N'], -2):.0f}.json")
+
+
+def osm_rails(E: float, N: float, radius_m: float = 1500.0, timeout: float = 60.0,
+              cache: Path | None = None) -> list[np.ndarray]:
+    """Rail lines a camera can see (rail, light rail, metro, tram; not in tunnels or below
+    ground) around (E, N), from OpenStreetMap."""
+    from rasterio.warp import transform
+
+    if cache is not None and cache.exists():
+        return [np.asarray(w, float) for w in json.loads(cache.read_text(encoding="utf-8"))]
+    lon, lat = transform("EPSG:27700", "EPSG:4326",
+                         [E - radius_m, E + radius_m], [N - radius_m, N + radius_m])
+    bbox = f"{lat[0]:.6f},{lon[0]:.6f},{lat[1]:.6f},{lon[1]:.6f}"
+    q = (f'[out:json][timeout:50];way["railway"~"^(rail|light_rail|subway|tram|narrow_gauge)$"]'
+         f'["tunnel"!~"."]({bbox});out geom tags;')
+    data = _overpass(q, timeout)
+    ways = []
+    for el in data.get("elements", []):
+        g = el.get("geometry") or []
+        try:
+            below = float(str((el.get("tags") or {}).get("layer", "0")).split(";")[0]) < 0
+        except ValueError:
+            below = False
+        if len(g) >= 2 and not below:
+            xs, ys = transform("EPSG:4326", "EPSG:27700", [p["lon"] for p in g],
+                               [p["lat"] for p in g])
+            ways.append(np.column_stack([xs, ys]))
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps([w.round(2).tolist() for w in ways]), encoding="utf-8")
+    return ways
 
 
 def _obstacle_cache(out: Path, prior: dict) -> Path:

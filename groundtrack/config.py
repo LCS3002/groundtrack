@@ -67,6 +67,17 @@ DEFAULTS: dict[str, Any] = {
             "smooth_window_s": 0.8,
             "ground_offset_m": 0.0,
         },
+        "trains": {
+            "classes": ["train"],
+            "speed_range": [0.0, 25.0],     # light rail / metro: up to ~90 km/h
+            "max_speed": 35.0,
+            "jump_tolerance_m": 5.0,
+            "stitch_radius_m": 8.0,
+            "min_displacement_m": 10.0,     # drop trains standing in a station the whole clip
+            "smooth_window_s": 1.0,
+            "ground_offset_m": 0.0,         # the box spans the whole train: its middle is fine
+            "plane_height_m": "auto",       # elevated tracks (DLR viaduct): fitted to OSM rails
+        },
         "vehicles": {
             "classes": ["car", "motorcycle", "bus", "truck"],
             "speed_range": [0.0, 35.0],
@@ -148,6 +159,7 @@ DEFAULTS: dict[str, Any] = {
         "blur_people": True,
         "trail_s": None,          # None = trails stay for the whole clip; e.g. 3 = last 3 s
         "style": "clean",         # clean: trails + dots, cleaned tracks only | boxes: debug
+        "boxes": True,            # clean style: a thin box around each object, speed colour
         "stabilize_output": True, # align the output video to the calibration frame
         "dim": 0.75,              # darken the video under the trails (clean style)
     },
@@ -183,6 +195,10 @@ class Group:
     jump_tolerance_m: float = 1.0
     stitch_radius_m: float = 1.5
     min_displacement_m: float = 0.0
+    # objects that move on a raised surface (an elevated railway, a bridge deck): project
+    # them onto that plane instead of the ground. A number (m above the calibrated ground) or
+    # "auto": fitted so the tracks land on the OpenStreetMap rail lines (trains)
+    plane_height_m: float | str = 0.0
 
     def offset_for(self, cls: str) -> float:
         off = self.ground_offset_m
@@ -209,6 +225,7 @@ class Config:
                 jump_tolerance_m=float(g.get("jump_tolerance_m", 1.0)),
                 stitch_radius_m=float(g.get("stitch_radius_m", 1.5)),
                 min_displacement_m=float(g.get("min_displacement_m", 0.0)),
+                plane_height_m=g.get("plane_height_m", 0.0) or 0.0,
             )
         self.class_to_group: dict[str, str] = {}
         for g in self.groups.values():

@@ -55,3 +55,18 @@ def test_max_range_auto_per_group():
     assert max_range_for(cfg, h, "people") == pytest.approx(np.sqrt(0.25 * f * hh - hh * hh))
     # vehicles tolerate coarser depth resolution than people: they are kept farther out
     assert max_range_for(cfg, h, "vehicles") > max_range_for(cfg, h, "people")
+
+
+def test_plane_homography_puts_raised_points_back():
+    """A point 8 m up (a train on a viaduct) lands right on the 8 m plane, not on the ground."""
+    from groundtrack.homography import plane_homography
+
+    cam, h, _, _ = _scene(height_m=40.0, pitch=25.0)
+    rng = np.random.default_rng(4)
+    xy = np.column_stack([rng.uniform(-10, 10, 20), rng.uniform(30, 70, 20)]) + ORIGIN
+    px = cam.project(np.column_stack([xy, np.full(len(xy), 8.0)]))
+    on_plane = plane_homography(h, 8.0).to_world(px)
+    on_ground = h.to_world(px)
+    assert np.abs(on_plane - xy).max() < 0.05
+    # treated as ground, the same pixels land several metres further from the camera
+    assert np.median(np.linalg.norm(on_ground - xy, axis=1)) > 5

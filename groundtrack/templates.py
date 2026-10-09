@@ -94,6 +94,9 @@ groups:
     ground_offset_m: {{default: 2.2, bus: 5.5, truck: 5.0, motorcycle: 1.0}}
     offset_mode: travel               # travel | view   (see README: 'Vehicle ground point')
     vehicle_width_m: 1.8
+  trains:                             # light rail / metro, if any is in view
+    classes: [train]
+    plane_height_m: auto              # elevated tracks: height fitted to the OSM rail lines
 
 projection:
   max_range_m: auto         # drop far vehicles where 1 px of jitter > 1 m of depth

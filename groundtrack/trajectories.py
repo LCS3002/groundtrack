@@ -246,6 +246,61 @@ def vehicle_centre(x, y, heading, group: Group, cls: str, h: Homography | None =
     return (np.where(ok, x + mag * d[:, 0], x), np.where(ok, y + mag * d[:, 1], y))
 
 
+def _raise_groups(g: pd.DataFrame, cfg: Config, h: Homography, log=print) -> pd.DataFrame:
+    """Re-project groups that move on a raised plane (plane_height_m), e.g. an elevated
+    railway: a train's box bottom is on the viaduct deck, not on the street below."""
+    from .homography import plane_homography
+
+    for gname, grp in cfg.groups.items():
+        z = grp.plane_height_m
+        rows = g["class"].isin(grp.classes).to_numpy()
+        if not z or not rows.any():
+            continue
+        if str(z).lower() == "auto":
+            z = fit_plane_height(g[rows], cfg, h, log)
+            if z is None:
+                continue
+        hz = plane_homography(h, float(z))
+        if hz is None:
+            log(f"  {gname}: no camera estimate, kept on the ground plane")
+            continue
+        w = hz.to_world(g.loc[rows, ["u", "v"]].to_numpy(float))
+        g.loc[rows, "gx"], g.loc[rows, "gy"] = w[:, 0], w[:, 1]
+    return g[np.isfinite(g["gx"]) & np.isfinite(g["gy"])]
+
+
+def fit_plane_height(rows: pd.DataFrame, cfg: Config, h: Homography, log=print,
+                     heights=np.arange(0.0, 25.01, 0.5)) -> float | None:
+    """Height (m) at which the tracked train positions lie on the OpenStreetMap rail lines."""
+    from .autocal import RoadDistance, _rail_cache, osm_rails
+    from .homography import plane_homography
+
+    prior = cfg.get("camera_position")
+    if not prior or len(rows) < 20:
+        return None
+    try:
+        rails = osm_rails(prior["E"], prior["N"],
+                          cache=_rail_cache(cfg.path("homography"), prior))
+    except Exception as e:  # offline / service busy: keep the ground plane
+        log(f"  rail height not fitted ({e}); trains kept on the ground plane")
+        return None
+    if not rails:
+        return None
+    dist = RoadDistance(rails, prior["E"], prior["N"], 1500)
+    uv = rows[["u", "v"]].to_numpy(float)
+    scores = []
+    for z in heights:
+        hz = plane_homography(h, float(z))
+        w = hz.to_world(uv) if hz is not None else np.full((len(uv), 2), np.nan)
+        d = dist(np.nan_to_num(w, nan=1e9))
+        scores.append(float(np.median(d)))
+    k = int(np.argmin(scores))
+    log(f"  trains: projected {heights[k]:.1f} m above the calibrated surface, where they line "
+        f"up with the mapped rail lines (median {scores[k]:.1f} m off; at road level "
+        f"{scores[0]:.1f} m)")
+    return float(heights[k])
+
+
 # --------------------------------------------------------------------------- range
 # Depth resolution (m per pixel of foot jitter) beyond which a group's positions are too
 # coarse to keep, for `projection.max_range_m: auto`.
@@ -295,6 +350,7 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
         if rec.any():
             log(f"  {int(rec.sum())} foot points rebuilt where the lower body was hidden")
     g = project_to_ground(raw, h, lens, registration, uv)
+    g = _raise_groups(g, cfg, h, log)
     n_above = len(raw) - len(g)
     if n_above:
         log(f"  {n_above} rows above the horizon / outside the ground plane dropped")

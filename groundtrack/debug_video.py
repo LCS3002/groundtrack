@@ -199,6 +199,7 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     blur = bool(dv.get("blur_people", True))
     trail_s = dv.get("trail_s")              # None = keep the whole path
     style = dv.get("style", "clean")
+    show_boxes = bool(dv.get("boxes", True))   # clean style: thin box around each object
     raw = raw.copy()
     raw["predicted"] = raw["predicted"].astype(str).str.lower().isin(["true", "1"])
     if raw.empty:
@@ -329,6 +330,11 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
                 q = cv2.perspectiveTransform(q, to_out)
             c = (int(q[0, 0, 0]), int(q[0, 0, 1]))
             if style == "clean":
+                if show_boxes and not r.predicted:      # a thin frame in the speed colour
+                    p1, p2 = _box_in_ref(r, H_f if stable else None)
+                    if to_out is not None and not stable:
+                        p1, p2 = _box_in_ref(r, None)
+                    cv2.rectangle(img, p1, p2, col, max(1, th - 1), cv2.LINE_AA)
                 cv2.circle(img, c, 3 * th, (20, 20, 20), -1, cv2.LINE_AA)
                 cv2.circle(img, c, 2 * th, col, -1, cv2.LINE_AA)
             else:

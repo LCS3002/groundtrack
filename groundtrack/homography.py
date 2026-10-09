@@ -122,6 +122,22 @@ class Homography:
         return h_obj
 
 
+def plane_homography(h: "Homography", z: float) -> "Homography | None":
+    """Pixel -> world mapping for the plane z m above the calibrated ground (same camera)."""
+    from .selfcal import camera_matrix
+
+    P = camera_matrix(h)
+    if P is None:
+        return None
+    G = np.column_stack([P[:, 0], P[:, 1], P[:, 2] * z + P[:, 3]])   # local (x, y, 1) -> px
+    Hz = np.linalg.inv(G)
+    Hz /= Hz[2, 2]
+    w, hh = h.image_size
+    probe = Hz @ np.array([w / 2, hh * 0.75, 1.0])
+    return Homography(H=Hz, origin=h.origin, image_size=h.image_size,
+                      w_sign=float(np.sign(probe[2])) or 1.0)
+
+
 def estimate_camera(H: np.ndarray, image_size, origin=(0.0, 0.0)) -> dict | None:
     """Recover focal length and camera centre from a pixel -> ground homography.
 
