@@ -160,6 +160,26 @@ plaza, this was the difference between calibrations that would not converge and 
 `calibrate` also writes `<name>_check_video.jpg`: the map projected into your video, which is
 the most readable check for oblique views.
 
+**Ground on several levels: `terrain`.** A homography maps one flat plane. Where people walk on
+more than one level, that breaks badly: Trafalgar Square's north terrace is 3 m above the
+square, and from the gallery steps a person on the terrace, projected onto the square's plane,
+lands tens of metres too far away. Give the site a terrain model and the ground follows it:
+
+```yaml
+terrain: auto        # England: the Environment Agency's free 1 m LiDAR terrain model (DTM),
+                     # fetched once for the map's extent into maps/dtm/<map>_dtm.tif.
+                     # Or a path to any DTM GeoTIFF in British National Grid.
+camera_position:
+  height_m: 1.8      # now: above the ground right under the camera (a step, the pavement)
+```
+
+Every clicked point then sits at its real height, so clicks on the terrace, the steps and the
+square all agree, and every foot point is ray-cast onto the terrain instead of one plane. The
+calibration file stores the terrain and its datum, so `process` and the Houdini export follow it
+too (`points.csv` gains `z`, the ground elevation in metres above sea level). The DTM is bare
+ground: under buildings it is interpolated, so for a camera inside a portico or a window,
+give `height_m` with a generous `height_tol_m`. Credit on the plate: added automatically.
+
 **Don't know the coordinates?** Look the place up on OpenStreetMap:
 
 ```powershell
@@ -517,7 +537,9 @@ symbology with `mean_vx` / `mean_vy`.
    ```
 3. You get one point per sample with `track_id, class, group, frame, time_s, v` (velocity, m/s),
    `speed, heading, predicted` and `Cd`. There's one open polyline per track (with prim attribs
-   `track_id`, `class`), and detail attribs `origin_E`, `origin_N`.
+   `track_id`, `class`), and detail attribs `origin_E`, `origin_N`, `origin_Z`. With a terrain
+  model (§3.3) each point sits at the height of the ground under it (Y), relative to `origin_Z`
+  (metres above sea level): the terrace walkers are 3 m above the square.
 
 * **Axes:** Houdini is Y-up, so Easting → **+X** and Northing → **−Z**. North is up in the *Top*
   viewport. Coordinates are relative to the site origin (float32 can't hold BNG coordinates to
@@ -635,8 +657,11 @@ RMS. Real footage will be worse; that's what this check is for.
   the camera height and can be off while the ground positions are still fine (the click error is
   the better measure there).
 * **Flat ground.** A homography maps one plane. Steps, ramps or a cambered road put objects off
-  that plane, and they get projected as if they were on it. For a stepped plaza, calibrate on the
-  main level and only use points on that level (or set the ROI to it).
+  that plane, and they get projected as if they were on it. Set `terrain: auto` (§3.3) and the
+  ground follows the Environment Agency's 1 m LiDAR model instead: terraces, steps and slopes.
+  Without it, for a stepped plaza calibrate on the main level and only use points on that level
+  (or set the ROI to it). The automatic road and people fits still assume one flat ground; with
+  a terrain model they are only used for checking, and clicked points do the fitting.
 * **Foot point.** A person's box bottom is their feet, which is good. A partly hidden person (a
   bollard covering their feet) gets a box that ends higher up, and is projected slightly *further
   away*. You can see this as a small kink just before an occlusion.

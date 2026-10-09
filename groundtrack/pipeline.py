@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -106,6 +107,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     log(f"  {summary.shape[0]} tracks, {len(points)} samples "
         f"({int(points['predicted'].sum()) if len(points) else 0} predicted/interpolated)")
 
+    if h.terrain is not None and len(points):
+        # the ground elevation under every sample (m above sea level): terraces, steps
+        points["z"] = np.round(h.terrain.height(points[["x", "y"]].to_numpy(float)), 2)
     out = {}
     out["points"] = run.points
     exports.write_points_csv(points, out["points"])
@@ -133,6 +137,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
 
     window = (meta["start_frame"] / fps, meta["end_frame"] / fps)
     stats = exports.compute_stats(points, summary, cfg, window)
+    stats["ground"] = ({"model": "terrain", "datum_m": round(h.ground_z_m, 2),
+                        "source": Path(h.terrain_path).name}
+                       if h.terrain is not None else {"model": "plane"})
     check = _people_height_check(cfg, raw, h, reg, log)
     if check:
         stats["calibration_check"] = check
@@ -145,7 +152,8 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     exports.stats_table(stats).to_csv(out["stats_csv"], index=False)
 
     out["houdini"] = run.houdini / "houdini_import.py"
-    exports.write_houdini_script(out["houdini"], run.houdini / "points.csv", h.origin, cfg)
+    exports.write_houdini_script(out["houdini"], run.houdini / "points.csv", h.origin, cfg,
+                                 z0=h.ground_z_m)
 
     log("rendering visuals ...")
     raster = None

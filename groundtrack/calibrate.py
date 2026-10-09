@@ -219,13 +219,17 @@ def warp_frame_to_map(frame_bgr: np.ndarray, h: Homography, raster: GeoRaster,
     out_w, out_h = int(W_img * s), int(H_img * s)
     cols, rows = np.meshgrid(np.arange(out_w) + 0.5, np.arange(out_h) + 0.5)
     world = raster.pixel_to_world(np.column_stack([cols.ravel() / s, rows.ravel() / s]))
-    local = world - np.asarray(h.origin)
-    Hinv = np.linalg.inv(h.H)
-    ph = np.column_stack([local, np.ones(len(local))]) @ Hinv.T
-    valid = np.sign(ph[:, 2]) == np.sign(h.w_sign)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        uv = ph[:, :2] / ph[:, 2:3]
-    uv[~valid] = -1e6
+    if h.terrain is not None:              # the ground follows the terrain model
+        uv = h.to_pixel(world)
+        uv[~np.isfinite(uv).all(axis=1)] = -1e6
+    else:
+        local = world - np.asarray(h.origin)
+        Hinv = np.linalg.inv(h.H)
+        ph = np.column_stack([local, np.ones(len(local))]) @ Hinv.T
+        valid = np.sign(ph[:, 2]) == np.sign(h.w_sign)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            uv = ph[:, :2] / ph[:, 2:3]
+        uv[~valid] = -1e6
     mapx = uv[:, 0].reshape(out_h, out_w).astype(np.float32)
     mapy = uv[:, 1].reshape(out_h, out_w).astype(np.float32)
     warped = cv2.remap(frame_bgr, mapx, mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
@@ -276,17 +280,19 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
                     lens: Lens | None = None, points_csv: Path | None = None,
                     interactive: bool = True, ransac_thresh_m: float = 1.0,
                     warn_m: float = 0.5, camera_prior: dict | None = None,
-                    log=print) -> Homography:
+                    log=print, terrain=None) -> Homography:
     frame_bgr = read_frame(video, frame)
     size = (frame_bgr.shape[1], frame_bgr.shape[0])
     if camera_prior:
         from .posefit import camera_calibration
 
         def fit_fn(a, b):
-            return camera_calibration(a, b, size, camera_prior)
+            return camera_calibration(a, b, size, camera_prior, terrain=terrain)
         min_live = 3
         log(f"camera position known (E {camera_prior['E']}, N {camera_prior['N']}, "
             f"{camera_prior['height_m']} m up): fitting a physical camera, 3+ pairs needed")
+        if terrain is not None:
+            log("ground follows the terrain model: click on any level (terrace, steps, street)")
     else:
         def fit_fn(a, b):
             return fit_homography(a, b, ransac_thresh_m=ransac_thresh_m)
@@ -328,7 +334,7 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
     if camera_prior:
         from .posefit import camera_calibration
 
-        h = camera_calibration(px, world, size, camera_prior)
+        h = camera_calibration(px, world, size, camera_prior, terrain=terrain)
         h.undistorted, h.crs = lens is not None, f"EPSG:{raster.epsg}"
     else:
         h = fit_homography(px, world, ransac_thresh_m=ransac_thresh_m, image_size=size,

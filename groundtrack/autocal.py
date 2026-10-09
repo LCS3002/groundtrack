@@ -128,7 +128,9 @@ def transfer(src: Homography, src_frame: np.ndarray, dst_frame: np.ndarray,
         if src_cam:             # the old fit is a better starting point than the config
             prior.update({k: src_cam[k] for k in ("E", "N", "height_m")})
             prior["position_tol_m"] = min(float(prior.get("position_tol_m", 15)), 5.0)
-        h = camera_calibration(px, world, (w_dst, h_dst), prior)
+            if src.terrain is not None:        # its height is above the old fit's datum
+                prior["ground_z_m"] = src.ground_z_m
+        h = camera_calibration(px, world, (w_dst, h_dst), prior, terrain=src.terrain)
     else:
         h = fit_homography(px, world, image_size=(w_dst, h_dst))
     h.image_size = (w_dst, h_dst)
@@ -1004,13 +1006,26 @@ def _obstacle_cache(out: Path, prior: dict) -> Path:
                          f"{round(prior['N'], -2):.0f}.json")
 
 
+def _attach_terrain(h: Homography, terrain, log=print) -> None:
+    """A camera fitted on one flat ground (roads, people, a flat calibration): project onto
+    the terrain from now on. Its plane is taken as the ground it saw (the median terrain
+    height under the lower half of the frame)."""
+    w, hh = h.image_size
+    uu, vv = np.meshgrid(np.linspace(0.05, 0.95, 20) * w, np.linspace(0.55, 0.95, 10) * hh)
+    g = h.plane_to_world(np.column_stack([uu.ravel(), vv.ravel()]))
+    z = terrain.height(g[np.isfinite(g).all(axis=1)])
+    if np.isfinite(z).any():
+        h.set_terrain(terrain, float(np.nanmedian(z)))
+        log(f"  ground: terrain model, this fit's flat ground taken at {h.ground_z_m:.1f} m")
+
+
 def _road_cache(out: Path, prior: dict) -> Path:
     """One road download per camera spot (100 m grid), shared by every clip filmed there."""
     return out.parent / f"osm_roads_{round(prior['E'], -2):.0f}_{round(prior['N'], -2):.0f}.json"
 
 
 def best_by_cross_validation(raw, size, prior: dict, clicks, reg, out: Path, log=print,
-                             pooled: dict | None = None):
+                             pooled: dict | None = None, terrain=None):
     """With 4+ clicked points: fit every method that applies, keep the one that predicts the
     held-out clicks best (leave-one-out). Returns (homography, {method: median error m}).
 
@@ -1022,7 +1037,7 @@ def best_by_cross_validation(raw, size, prior: dict, clicks, reg, out: Path, log
     quiet = lambda *_: None  # noqa: E731
 
     def clicked(p, w):
-        return camera_calibration(p, w, size, prior)
+        return camera_calibration(p, w, size, prior, terrain=terrain)
 
     methods = {"clicked points": clicked}
     if pooled:
@@ -1031,12 +1046,14 @@ def best_by_cross_validation(raw, size, prior: dict, clicks, reg, out: Path, log
         names = ", ".join(pooled)
         methods[f"clicked points + {len(pp)} clicks of {names} (same spot)"] = \
             lambda p, w: clicked(np.vstack([p, pp]), np.vstack([w, pw]))
-    if raw["class"].isin(["car", "bus", "truck"]).sum() >= 100:
+    if terrain is not None:
+        log("  (terrain model: the road and people fits assume one flat ground, not compared)")
+    elif raw["class"].isin(["car", "bus", "truck"]).sum() >= 100:
         ways = osm_roads(prior["E"], prior["N"], cache=_road_cache(out, prior))
         methods["clicked points + vehicles on roads"] = lambda p, w: fit_to_roads(
             raw, size, prior, ways, reg, log=quiet, clicks=(p, w), search=False,
             extra_starts=[clicked(p, w).camera_params])[0]
-    if (raw["class"] == "person").sum() >= 300:
+    if terrain is None and (raw["class"] == "person").sum() >= 300:
         rings = osm_obstacles(prior["E"], prior["N"], cache=_obstacle_cache(out, prior))
         methods["clicked points + walking people"] = lambda p, w: fit_to_people(
             raw, size, prior, rings, reg, log=quiet, clicks=(p, w),
@@ -1083,6 +1100,9 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         raise ValueError("Set `homography:` (output path) in the site config")
     prior = cfg.get("camera_position")
     report: dict = {"site": cfg.site, "tried": []}
+    from .terrain import resolve_terrain
+
+    terrain = resolve_terrain(cfg, log)
     video = cfg.path("video")
     frame_idx = Homography.load(out).reference_frame if out.exists() else 0
     frame = read_frame(video, frame_idx)
@@ -1169,7 +1189,7 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
             and len(clicks_all[0]) >= 4:
         log(f"{len(clicks_all[0])} clicked points: comparing methods by leaving each point out")
         h, scores = best_by_cross_validation(raw, size, prior, clicks_all, reg, out, log=log,
-                                             pooled=same_spot_clicks or None)
+                                             pooled=same_spot_clicks or None, terrain=terrain)
         report["cross_validation"] = scores
         if h.method.startswith("clicked points (") and out.exists():
             log("your clicked calibration is already the best of these: nothing to change")
@@ -1238,6 +1258,9 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         log("automatic calibration not possible: " + report.get("reason", "see the report"))
         report["result"] = None
         return report
+
+    if terrain is not None and h.terrain is None:
+        _attach_terrain(h, terrain, log)
 
     # 4. checks ------------------------------------------------------------------------
     if raw is not None:

@@ -22,6 +22,9 @@ DEFAULTS: dict[str, Any] = {
     "geotiff": None,
     "homography": None,           # JSON written by `groundtrack calibrate`
     "lens": None,                 # optional JSON written by `groundtrack lens-calibrate`
+    "terrain": None,              # ground with level changes (terraces, steps): a DTM GeoTIFF,
+                                  # or "auto" (England: Environment Agency LiDAR 1 m, fetched).
+                                  # camera_position.height_m is then above the ground there
     "output_dir": "runs",
     "models_dir": None,           # where bare model names (yolo26m.pt) are downloaded/cached
     "device": "auto",             # auto | cuda | mps | cpu

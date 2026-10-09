@@ -33,7 +33,7 @@ def camera_matrix(h: Homography) -> np.ndarray | None:
     r3 = np.cross(r1, r2)
     P = np.column_stack([G[:, 0], G[:, 1], (K @ r3) / s, G[:, 2]])
     # 'up' must move a point up the image (smaller v) for a ground point in view
-    probe = h.to_world(np.array([[w / 2, hh * 0.8]]))[0] - np.asarray(h.origin)
+    probe = h.plane_to_world(np.array([[w / 2, hh * 0.8]]))[0] - np.asarray(h.origin)
     if np.isfinite(probe).all():
         def v_at(z):
             x = P @ np.array([probe[0], probe[1], z, 1.0])
@@ -49,8 +49,11 @@ def implied_heights(foot_px: np.ndarray, top_px: np.ndarray, h: Homography,
     P = camera_matrix(h) if P is None else P
     if P is None:
         return np.full(len(foot_px), np.nan)
-    g = h.to_world(foot_px) - np.asarray(h.origin)
-    X = np.column_stack([g, np.zeros(len(g)), np.ones(len(g))])
+    gw = h.to_world(foot_px)
+    g = gw - np.asarray(h.origin)
+    # the foot stands on the ground (a terrace or a step with a terrain model); solve for
+    # the height above it
+    X = np.column_stack([g, h.ground_height(gw), np.ones(len(g))])
     a, c = X @ P[1], X @ P[2]
     b, d = P[1, 2], P[2, 2]
     v = np.asarray(top_px, float)[:, 1]

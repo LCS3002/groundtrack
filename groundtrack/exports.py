@@ -264,7 +264,9 @@ track_id and colours them (Cd) by speed with the same blue -> red ramp as topdow
 
 Axes: Houdini is Y-up, so Easting -> +X and Northing -> -Z (north is up in the Top view).
 Coordinates are relative to ORIGIN (stored as detail attributes origin_E / origin_N) to keep
-float32 precision; add ORIGIN back to get British National Grid metres.
+float32 precision; add ORIGIN back to get British National Grid metres. Height (Y) is the
+ground under each point (a terrace, steps) when the site has a terrain model, relative to
+Z0 (detail attribute origin_Z, metres above sea level); 0 on a flat calibration.
 
 Attributes
   point: track_id, class, group, frame, time_s, v (velocity m/s, Houdini axes), speed,
@@ -281,6 +283,7 @@ import hou
 
 CSV_PATH = __CSV_PATH__
 ORIGIN = __ORIGIN__
+Z0 = __Z0__                            # ground elevation at Y = 0 (m above sea level)
 SPEED_RANGES = __SPEED_RANGES__        # m/s colour range per group
 RAMP = __RAMP__                        # (position, sRGB) stops, blue -> red
 CD_LINEAR = True                       # convert sRGB ramp to linear for Houdini's colour pipeline
@@ -342,9 +345,11 @@ geo.addAttrib(hou.attribType.Prim, "class", "")
 geo.addAttrib(hou.attribType.Prim, "group", "")
 geo.addAttrib(hou.attribType.Global, "origin_E", float(ORIGIN[0]))
 geo.addAttrib(hou.attribType.Global, "origin_N", float(ORIGIN[1]))
+geo.addAttrib(hou.attribType.Global, "origin_Z", float(Z0))
 
 ox, oy = ORIGIN
-positions = [hou.Vector3(float(r["x"]) - ox, 0.0, -(float(r["y"]) - oy)) for r in rows]
+positions = [hou.Vector3(float(r["x"]) - ox, float(r.get("z") or Z0) - Z0, -(float(r["y"]) - oy))
+             for r in rows]
 points = geo.createPoints(positions)
 pred = [1 if r["predicted"].strip().lower() in ("true", "1") else 0 for r in rows]
 geo.setPointIntAttribValues("track_id", [int(r["track_id"]) for r in rows])
@@ -552,11 +557,12 @@ def write_houdini_field_script(path: Path, field_files: dict, slice_files: dict,
 
 
 def write_houdini_script(path: Path, points_csv: Path, origin: tuple[float, float],
-                         cfg: Config) -> None:
+                         cfg: Config, z0: float | None = None) -> None:
     ranges = {g.name: tuple(g.speed_range) for g in cfg.groups.values()}
     txt = (HOUDINI_TEMPLATE
            .replace("__CSV_PATH__", repr(Path(points_csv).resolve().as_posix()))
            .replace("__ORIGIN__", repr((float(origin[0]), float(origin[1]))))
+           .replace("__Z0__", repr(round(float(z0 or 0.0), 2)))
            .replace("__SPEED_RANGES__", repr(ranges))
            .replace("__RAMP__", repr(ramp_stops())))
     Path(path).write_text(txt, encoding="utf-8")

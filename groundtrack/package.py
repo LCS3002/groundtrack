@@ -328,6 +328,10 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         for key, label, value, unit in figs:
             w.writerow([key, value, unit, label])
     text = plate_text(cfg)
+    if hom.get("terrain"):
+        from .terrain import CREDIT
+
+        text["credit"] = "; ".join(x for x in (text["credit"], CREDIT) if x)
     (labels / "title.txt").write_text(
         "\n".join(x for x in (text["title"] + (f"  {text['index']}" if text["index"] else ""),
                               text["subtitle"], text["date"],

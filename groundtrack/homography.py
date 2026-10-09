@@ -8,6 +8,7 @@ most of the floating point precision of the 3x3 matrix.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,10 +41,27 @@ class Homography:
     loo_rmse_m: float | None = None
     w_sign: float = 1.0                   # sign of the projective w for ground points
     reference_frame: int = 0              # video frame the points were clicked on
+    # ground that changes level (terraces, steps): a LiDAR terrain model, see terrain.py.
+    # H is then the plane at the datum: local z = 0 is absolute elevation ground_z_m
+    ground_z_m: float | None = None
+    terrain_path: str | None = None
+    _terrain: object | None = field(default=None, repr=False, compare=False)
 
     # -- projection -----------------------------------------------------------
     def to_world(self, px: np.ndarray) -> np.ndarray:
-        """Pixel (N, 2) -> world (N, 2). Points above the horizon become NaN."""
+        """Pixel (N, 2) -> world (N, 2) on the ground: the plane, or the terrain model if the
+        calibration has one. Points above the horizon become NaN."""
+        if self.terrain is not None:
+            from .terrain import raycast
+
+            px = np.asarray(px, float).reshape(-1, 2)
+            _, Minv, C = self._rays()
+            D = np.column_stack([px, np.ones(len(px))]) @ Minv.T
+            return raycast(C, D, self.terrain, self.ground_z_m, self.origin)
+        return self.plane_to_world(px)
+
+    def plane_to_world(self, px: np.ndarray) -> np.ndarray:
+        """Pixel (N, 2) -> world (N, 2) on the calibration plane (the datum)."""
         px = np.asarray(px, float).reshape(-1, 2)
         ph = np.column_stack([px, np.ones(len(px))]) @ self.H.T
         w = ph[:, 2]
@@ -53,10 +71,61 @@ class Homography:
         return out
 
     def to_pixel(self, world: np.ndarray) -> np.ndarray:
-        world = np.asarray(world, float).reshape(-1, 2) - np.asarray(self.origin)
+        """World (N, 2) on the ground -> pixel (N, 2)."""
+        world = np.asarray(world, float).reshape(-1, 2)
+        if self.terrain is not None:
+            P, _, _ = self._rays()
+            X = np.column_stack([world - np.asarray(self.origin), self.ground_height(world),
+                                 np.ones(len(world))])
+            ph = X @ P.T
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out = ph[:, :2] / ph[:, 2:3]
+            out[~(ph[:, 2] > 0)] = np.nan             # behind the camera
+            return out
+        world = world - np.asarray(self.origin)
         Hinv = np.linalg.inv(self.H)
         ph = np.column_stack([world, np.ones(len(world))]) @ Hinv.T
         return ph[:, :2] / ph[:, 2:3]
+
+    # -- terrain ----------------------------------------------------------------
+    @property
+    def terrain(self):
+        if self._terrain is None and self.terrain_path:
+            from .terrain import load_terrain
+
+            self._terrain = load_terrain(self.terrain_path)
+        return self._terrain
+
+    def set_terrain(self, terrain, ground_z_m: float) -> None:
+        self._terrain = terrain
+        self.terrain_path = getattr(terrain, "path", None) or None
+        self.ground_z_m = float(ground_z_m)
+        self._ray_cache = None
+
+    def ground_height(self, world: np.ndarray) -> np.ndarray:
+        """Ground height (m) above the datum at world (E, N); 0 on a flat calibration."""
+        world = np.asarray(world, float).reshape(-1, 2)
+        if self.terrain is None:
+            return np.zeros(len(world))
+        z = self.terrain.height(world) - self.ground_z_m
+        return np.where(np.isfinite(z), z, 0.0)
+
+    def _rays(self):
+        """(P, M^-1, camera centre): 3x4 camera matrix in local metres with points in front
+        at positive depth, and what turns a pixel into its viewing ray. Cached."""
+        if getattr(self, "_ray_cache", None) is None:
+            from .selfcal import camera_matrix
+
+            P = camera_matrix(self)
+            if P is None:
+                raise ValueError("following the terrain needs a calibrated camera")
+            w, hh = self.image_size
+            probe = self.plane_to_world(np.array([[w / 2, hh * 0.8]]))[0] - np.asarray(self.origin)
+            if np.isfinite(probe).all() and (P @ np.r_[probe, 0.0, 1.0])[2] < 0:
+                P = -P
+            Minv = np.linalg.inv(P[:, :3])
+            self._ray_cache = (P, Minv, -Minv @ P[:, 3])
+        return self._ray_cache
 
     def camera(self) -> dict | None:
         """Estimate the camera from the homography (cached).
@@ -95,6 +164,9 @@ class Homography:
             # how it was made: "points" (clicked), "same spot (from <site>)", "vehicles on roads"
             "method": getattr(self, "method", "points"),
             "method_info": getattr(self, "method_info", None),
+            # ground model: null = the plane; else a terrain model (path relative to this file)
+            "terrain": _rel(self.terrain_path, Path(path).parent),
+            "ground_z_m": self.ground_z_m,
             "points": self.points,
         }
         Path(path).write_text(json.dumps(d, indent=2), encoding="utf-8")
@@ -119,7 +191,20 @@ class Homography:
             h_obj.camera_params = d["camera_params"]
         h_obj.method = d.get("method", "points")
         h_obj.method_info = d.get("method_info")
+        if d.get("terrain"):
+            t = Path(d["terrain"])
+            h_obj.terrain_path = str(t if t.is_absolute() else (Path(path).parent / t).resolve())
+            h_obj.ground_z_m = float(d["ground_z_m"])
         return h_obj
+
+
+def _rel(p: str | None, base: Path) -> str | None:
+    if not p:
+        return None
+    try:
+        return Path(os.path.relpath(p, base)).as_posix()
+    except ValueError:          # another drive (Windows)
+        return str(p)
 
 
 def plane_homography(h: "Homography", z: float) -> "Homography | None":
