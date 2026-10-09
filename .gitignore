@@ -25,3 +25,5 @@ deliver.py
 .gstack/
 rebuild_all.py
 start_ui.bat
+rerun_v2.py
+compare_v1_v2.py
