@@ -710,12 +710,17 @@ RMS. Real footage will be worse; that's what this check is for.
   are only meaningful within one video.
 * The overlay video (`videos/overlay.mp4`) is **off by default**. When you do render it, people
   are **blurred** unless you pass `--no-blur`. Don't share an unblurred overlay video.
+* **Number plates** are blurred too, in the overlay videos and the in-situ images: the lower part
+  of every vehicle close enough for its plate to be readable (`debug_video: blur_plates`, on by
+  default). Like the people blur, it relies on the detections: a vehicle the detector missed
+  is not blurred, so look through a video before sharing it.
 * **Delete the raw footage once you've processed it and checked the run.** `points.csv`,
   `tracks.geojson` and the rest contain everything the research needs. In PowerShell:
   `Remove-Item footage\plaza.mp4`. On macOS: `rm footage/plaza.mp4`, then empty the Bin. Also
   delete the copies on your phone and in its cloud backup (iCloud / Google Photos "Recently
-  deleted"), and any unblurred overlay video. Keep the calibration files: they hold no personal
-  data.
+  deleted"), and any unblurred overlay video. Keep the calibration `.json` and `_points.csv`
+  files: they hold no personal data. The check images next to them (`*_check.png`,
+  `*_check_video.jpg`) show the unblurred calibration frame: delete them with the footage.
 * If the footage might show identifiable people, follow your institution's ethics and data
   protection guidance (UK GDPR). Signage at the site and short retention periods are standard
   practice.

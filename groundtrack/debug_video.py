@@ -51,6 +51,24 @@ def blur_box(img, x1, y1, x2, y2):
 
 PERSON_HEIGHT_M = 1.7
 
+VEHICLE_CLASSES = ("car", "truck", "bus", "motorcycle")
+PLATE_BAND = 0.45         # lower part of a vehicle box: front and rear plates sit in it
+PLATE_MIN_PX = 28         # smaller (further) vehicles: a plate is a few pixels, unreadable
+
+
+def privacy_boxes(r: pd.DataFrame, people: bool = True, plates: bool = True) -> pd.DataFrame:
+    """Boxes to blur (frame, x1, y1, x2, y2): every person, and the lower band of every
+    vehicle close enough for its number plate to be readable."""
+    cols = ["frame", "x1", "y1", "x2", "y2"]
+    parts = []
+    if people:
+        parts.append(r.loc[r["class"] == "person", cols])
+    if plates:
+        v = r.loc[r["class"].isin(VEHICLE_CLASSES), cols]
+        v = v[(v["y2"] - v["y1"]) >= PLATE_MIN_PX]
+        parts.append(v.assign(y1=v["y2"] - PLATE_BAND * (v["y2"] - v["y1"])))
+    return pd.concat(parts) if parts else pd.DataFrame(columns=cols)
+
 
 def _smooth_image_paths(raw: pd.DataFrame, uv: np.ndarray, fps: float, window_s: float = 0.4):
     """Per-track Savitzky-Golay smoothing of the foot points in image space (+ px/s speed)."""
@@ -197,6 +215,7 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
 
     dv = cfg["debug_video"]
     blur = bool(dv.get("blur_people", True))
+    plates = bool(dv.get("blur_plates", True))
     trail_s = dv.get("trail_s")              # None = keep the whole path
     style = dv.get("style", "clean")
     show_boxes = bool(dv.get("boxes", True))   # clean style: thin box around each object
@@ -216,8 +235,9 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
         from .video import read_frame
 
         ref_img = read_frame(video, ref_frame)
-        if blur:  # the reference frame shows people too
-            for r in raw_all_people(run_dir, raw).query("frame == @ref_frame").itertuples():
+        if blur or plates:  # the reference frame shows people and vehicles too
+            for r in privacy_boxes(raw_all(run_dir, raw), blur, plates).query(
+                    "frame == @ref_frame").itertuples():
                 blur_box(ref_img, r.x1, r.y1, r.x2, r.y2)
     clean = cfg["cleaning"]
     if clean.get("recover_occluded_feet", True):
@@ -250,8 +270,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     th = max(1, int(round(2 * max(W, H) / 1920)))
     # every blur needs the unfiltered detections, even in the clean style
-    blur_rows = {f: g for f, g in raw_all_people(run_dir, raw).groupby("frame")} \
-        if blur else {}
+    blur_rows = {f: g for f, g in privacy_boxes(raw_all(run_dir, raw), blur, plates)
+                 .groupby("frame")} if (blur or plates) else {}
 
     canvas = np.zeros((H, W, 3), np.uint8)   # trail layer, calibration-frame pixels
     alpha = np.zeros((H, W), np.uint8)
@@ -361,14 +381,12 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
         clean_writer.release()
     cap.release()
     log(f"overlay video -> {out_path} (style {style}"
-        + (", people blurred" if blur else "") + (", stabilized" if stable else "")
+        + (", people blurred" if blur else "") + (", number plates blurred" if plates else "") + (", stabilized" if stable else "")
         + f"; trail colour = speed, {mode})")
 
 
-def raw_all_people(run_dir, fallback: pd.DataFrame) -> pd.DataFrame:
-    """Every person box of the run (incl. those the clean style hides), for blurring."""
+def raw_all(run_dir, fallback: pd.DataFrame) -> pd.DataFrame:
+    """Every box of the run (incl. those the clean style hides), for blurring."""
     if run_dir is not None and open_run(run_dir).raw_tracks.exists():
-        r = pd.read_csv(open_run(run_dir).raw_tracks)
-    else:
-        r = fallback
-    return r[r["class"] == "person"]
+        return pd.read_csv(open_run(run_dir).raw_tracks)
+    return fallback

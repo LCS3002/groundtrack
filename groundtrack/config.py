@@ -160,6 +160,7 @@ DEFAULTS: dict[str, Any] = {
     "debug_video": {
         "enabled": False,
         "blur_people": True,
+        "blur_plates": True,      # the lower part of every near vehicle (number plates)
         "trail_s": None,          # None = trails stay for the whole clip; e.g. 3 = last 3 s
         "style": "clean",         # clean: trails + dots, cleaned tracks only | boxes: debug
         "boxes": True,            # clean style: a thin box around each object, speed colour

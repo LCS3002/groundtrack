@@ -100,7 +100,7 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
                   frame: int | None = None, line_px: float = 1.6) -> dict:
     """In-situ layers at out_h: frame (RGB, people blurred, aligned to the calibration
     frame), base (darkened frame, float), trails (additive light layer, float)."""
-    from .debug_video import blur_box, trail_samples
+    from .debug_video import blur_box, privacy_boxes, trail_samples
     from .registration import apply_registration, load_registration
     from .trajectories import recover_feet
     from .video import read_frame
@@ -114,9 +114,12 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     if frame is None:
         frame = int((raw["frame"].min() + raw["frame"].max()) // 2)
 
+    dv = cfg.get("debug_video") or {}
+    hide = privacy_boxes(raw, bool(dv.get("blur_people", True)), bool(dv.get("blur_plates", True)))
+
     def blurred(f):
         im = read_frame(video, f)
-        for r in raw[(raw["frame"] == f) & (raw["class"] == "person")].itertuples():
+        for r in hide[hide["frame"] == f].itertuples():
             blur_box(im, r.x1, r.y1, r.x2, r.y2)
         return im
 
@@ -372,7 +375,7 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
     nouns = [GROUP_NOUN.get(g_, g_) for g_ in groups]
     who = nouns[0] if len(nouns) == 1 else ", ".join(nouns[:-1]) + " and " + nouns[-1]
     _text(d, (margin, H - 95), "Trails: every tracked " + who
-          + " of the clip, coloured by measured speed. People are blurred."
+          + " of the clip, coloured by measured speed. People and number plates are blurred."
           + (f" Imagery: {credit.rstrip('.')}." if credit else ""), 22, "Light", (96, 96, 100),
           tracking=0.02)
     out_png = Path(out_png)
