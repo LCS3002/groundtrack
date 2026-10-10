@@ -53,8 +53,11 @@ def _scroll_zoom(ax, event, base=1.4):
 
 
 def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_world=None,
-                warn_m: float = 0.5, fit_fn=None, min_live: int = 5):
-    """Open the two-pane picker. Returns (px, world) arrays, or None if cancelled."""
+                warn_m: float = 0.5, fit_fn=None, min_live: int = 5, camera_xy=None,
+                view_m: float = 90.0):
+    """Open the two-pane picker. Returns (px, world) arrays, or None if cancelled.
+
+    camera_xy: the known camera position: the map opens around it (view_m each way), marked."""
     import matplotlib.pyplot as plt
 
     px: list[list[float]] = [list(p) for p in (init_px if init_px is not None else [])]
@@ -68,6 +71,13 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
     axm.imshow(raster.image, extent=raster.extent, interpolation="bilinear")
     axm.set_title(f"MAP  (EPSG:{raster.epsg})")
     axm.ticklabel_format(useOffset=False, style="plain")
+    if camera_xy is not None:      # start where the camera was, not on the whole map
+        ce, cn = (float(v) for v in camera_xy)
+        axm.plot(ce, cn, "^", color="white", mec="black", ms=11, mew=1.2)
+        axm.annotate("camera (approx.)", (ce, cn), xytext=(8, -14), textcoords="offset points",
+                     color="white", fontsize=9, weight="bold")
+        axm.set_xlim(max(ce - view_m, raster.left), min(ce + view_m, raster.right))
+        axm.set_ylim(max(cn - view_m, raster.bottom), min(cn + view_m, raster.top))
     artists: list = []
 
     def redraw():
@@ -313,8 +323,10 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
     if interactive:
         import matplotlib.pyplot as plt  # noqa: F401  (ensure an interactive backend loads)
 
+        cam_xy = (camera_prior["E"], camera_prior["N"]) if camera_prior else None
         res = pick_points(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), raster, init_px,
-                          init_world, warn_m, fit_fn=fit_fn, min_live=min_live)
+                          init_world, warn_m, fit_fn=fit_fn, min_live=min_live,
+                          camera_xy=cam_xy)
         if res is None:
             raise SystemExit("Calibration cancelled; nothing saved.")
         px, world = res
