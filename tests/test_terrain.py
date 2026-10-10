@@ -113,3 +113,29 @@ def test_terrain_survives_save_and_load(tmp_path):
     h2 = Homography.load(tmp_path / "cal.json")
     assert h2.ground_z_m == pytest.approx(h.ground_z_m)
     assert np.abs(h2.to_world(px) - h.to_world(px)).max() < 1e-6
+
+
+def test_road_fit_projection_matches_the_calibration_on_terrain():
+    """The road fit's own ray casting and the saved calibration agree (same camera)."""
+    from groundtrack.autocal import RoadDistance, RoadObjective, VehicleSamples
+    from groundtrack.posefit import pose_homography
+
+    t = _terrain()
+    E, N = ORIGIN[0], ORIGIN[1] + 30.0
+    z0 = float(t.height(np.array([[E, N]]))[0])
+    p = (180.0, 12.0, 0.5, np.log(1400.0), 1.0, -0.5, 2.0)       # yaw tilt roll logf dE dN h
+    rng = np.random.default_rng(5)
+    uv = np.column_stack([rng.uniform(100, 1800, 50), rng.uniform(600, 1050, 50)])
+    S = VehicleSamples(uv, np.arange(50), np.zeros(50))
+    S.left, S.right, S.cls = uv, uv, np.array(["car"] * 50)
+    road = RoadDistance([np.array([[E - 50, N - 40], [E + 50, N - 40]])], E, N, 200)
+    obj = RoadObjective(S, road, E, N, (1920, 1080), terrain=t, z0=z0)
+    h = pose_homography(E + p[4], N + p[5], p[6], p[0], p[1], 1400.0, (1920, 1080), roll=p[2],
+                        origin=np.round([E, N]))
+    h.camera_params = {"E": E + p[4], "N": N + p[5], "height_m": p[6], "yaw_deg": p[0],
+                       "tilt_deg": p[1], "roll_deg": p[2], "focal_px": 1400.0}
+    h.set_terrain(t, z0)
+    a, b = obj.ground(p, uv), h.to_world(uv)
+    ok = np.isfinite(a).all(axis=1)
+    assert ok.mean() > 0.9
+    assert np.abs(a[ok] - b[ok]).max() < 0.05

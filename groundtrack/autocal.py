@@ -324,11 +324,14 @@ class RoadObjective:
                  angle (car 4.5 x 1.8 m, ...): this sets the zoom / scale
       speed      no impossible speeds (slow traffic is normal: queues, lights)
     Parameters p: yaw, tilt, roll (deg), log focal (px), dE, dN (m), height (m).
+    With a terrain (and its datum z0, the ground at (E, N)) pixels are ray-cast onto it;
+    the height is then above the ground under the camera.
     """
 
     def __init__(self, S: VehicleSamples, road: RoadDistance, E: float, N: float, size,
-                 speed_band=(0.2, 40.0)):
+                 speed_band=(0.2, 40.0), terrain=None, z0: float | None = None):
         self.S, self.road, self.E, self.N = S, road, E, N
+        self.terrain, self.z0 = terrain, z0
         self.w, self.h = size
         uv, ids, ts = S
         self.uv = uv
@@ -358,6 +361,11 @@ class RoadObjective:
         x = (pix[:, 0] - self.w / 2) / f
         y = (pix[:, 1] - self.h / 2) / f
         ray = fwd[None] + x[:, None] * right[None] + y[:, None] * down[None]
+        if self.terrain is not None:
+            from .terrain import raycast
+
+            return raycast(np.array([dE, dN, height]), ray, self.terrain, self.z0,
+                           (self.E, self.N), step_m=1.0)
         t = np.where(ray[:, 2] < -1e-6, height / -np.minimum(ray[:, 2], -1e-6), np.nan)
         return np.column_stack([self.E + dE + t * ray[:, 0], self.N + dN + t * ray[:, 1]])
 
@@ -408,7 +416,7 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
                  registration: dict | None = None, log=print, radius_m: float = 1500.0,
                  speed_band=(0.2, 40.0), minor_penalty_m: float = 5.0,
                  extra_starts: list[dict] | None = None, clicks=None, click_px: float = 4.0,
-                 search: bool = True):
+                 search: bool = True, terrain=None):
     """Camera from the known position + vehicles-on-roads. Returns (Homography|None, info).
 
     clicks: optional (pixels, world) point pairs; each counts like `click_px` pixels of
@@ -417,7 +425,10 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
 
     Search: every direction, tilt and zoom on a small sample of tracks (steps scaled to the
     zoom, so long lenses are not skipped), then the most promising distinct candidates are
-    refined on all tracks, with the camera position free within its tolerance."""
+    refined on all tracks, with the camera position free within its tolerance.
+
+    terrain: the search runs on the ground level under the camera; the best two solutions
+    are then refined with every pixel ray-cast onto the terrain (sloping streets, levels)."""
     from scipy.optimize import least_squares
 
     from .posefit import pose_homography
@@ -431,6 +442,12 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
     E, N, Hc = float(prior["E"]), float(prior["N"]), float(prior["height_m"])
     pos_tol = float(prior.get("position_tol_m", 15.0))
     h_tol = float(prior.get("height_tol_m", max(1.0, 0.06 * Hc)))
+    z0 = None
+    if terrain is not None:
+        z0 = float(terrain.height(np.array([[E, N]]))[0])
+        if not np.isfinite(z0):
+            log("  (the camera is outside the terrain model: flat ground)")
+            terrain = None
     road = RoadDistance(ways, E, N, radius_m, minor_penalty_m=minor_penalty_m)
     w, hh = size
     full = RoadObjective(S, road, E, N, size, speed_band)
@@ -461,13 +478,18 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
 
         c_px, c_world = (np.asarray(a, float).reshape(-1, 2) for a in clicks)
         w_click = math.sqrt(len(full.uv) / max(len(c_px), 1)) / click_px
+        c_z = None
+        if terrain is not None:          # clicked points at their height on the terrain
+            c_z = np.nan_to_num(terrain.height(c_world) - z0)
 
     def refine(x0, obj=full, nfev=300):
         def r(p):
             prior_r = 3.0 * np.array([p[4] / sig_pos, p[5] / sig_pos, (p[6] - Hc) / sig_h])
             out = [obj.residuals(p), prior_r]
             if clicks is not None:
-                out.append(w_click * (_project(p, c_world, size, np.array([E, N])) - c_px).ravel())
+                z = c_z if obj.terrain is not None else None
+                out.append(w_click * (_project(p, c_world, size, np.array([E, N]), z)
+                                      - c_px).ravel())
             return np.concatenate(out)
         return least_squares(r, np.clip(np.asarray(x0, float), lo, hi), bounds=(lo, hi),
                              max_nfev=nfev, diff_step=1e-3)
@@ -501,6 +523,17 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
         if len(done) >= 8:
             break
     sols.sort(key=lambda s_: s_.cost)
+    if terrain is not None:
+        # the best two distinct answers, refined on the terrain itself
+        full = RoadObjective(S, road, E, N, size, speed_band, terrain=terrain, z0=z0)
+        top = []
+        for s_ in sols:
+            if distinct(s_.x, [q.x for q in top]):
+                top.append(s_)
+            if len(top) >= 2:
+                break
+        sols = sorted((refine(s_.x, full, nfev=80) for s_ in top), key=lambda s_: s_.cost)
+        info["terrain"] = True
     p = sols[0].x
     g = full.ground(p, full.uv)
     d = road(np.nan_to_num(g, nan=1e9))
@@ -518,6 +551,8 @@ def fit_to_roads(raw: pd.DataFrame, size, prior: dict, ways: list[np.ndarray],
                         params["tilt_deg"], params["focal_px"], size, roll=params["roll_deg"],
                         origin=np.round([E, N]))
     h.camera_params = params
+    if terrain is not None:
+        h.set_terrain(terrain, z0)
     h.points = []
     h.rmse_m = float(np.median(d))
     h.max_error_m = float(np.percentile(d, 90))
@@ -1046,13 +1081,13 @@ def best_by_cross_validation(raw, size, prior: dict, clicks, reg, out: Path, log
         names = ", ".join(pooled)
         methods[f"clicked points + {len(pp)} clicks of {names} (same spot)"] = \
             lambda p, w: clicked(np.vstack([p, pp]), np.vstack([w, pw]))
-    if terrain is not None:
-        log("  (terrain model: the road and people fits assume one flat ground, not compared)")
-    elif raw["class"].isin(["car", "bus", "truck"]).sum() >= 100:
+    if raw["class"].isin(["car", "bus", "truck"]).sum() >= 100:
         ways = osm_roads(prior["E"], prior["N"], cache=_road_cache(out, prior))
         methods["clicked points + vehicles on roads"] = lambda p, w: fit_to_roads(
             raw, size, prior, ways, reg, log=quiet, clicks=(p, w), search=False,
-            extra_starts=[clicked(p, w).camera_params])[0]
+            extra_starts=[clicked(p, w).camera_params], terrain=terrain)[0]
+    if terrain is not None:
+        log("  (terrain model: the walking-people fit assumes one flat ground, not compared)")
     if terrain is None and (raw["class"] == "person").sum() >= 300:
         rings = osm_obstacles(prior["E"], prior["N"], cache=_obstacle_cache(out, prior))
         methods["clicked points + walking people"] = lambda p, w: fit_to_people(
@@ -1202,12 +1237,11 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         if not prior:
             report["reason"] = ('needs the camera position first: groundtrack locate '
                                 '"<building>" --floor N -c <site>.yaml --write')
-        elif terrain is not None:
-            # the road and people fits put everything on one flat ground, and with a terrain
-            # the camera height means something else (above the ground under the camera)
-            report["reason"] = ("with a terrain model the fits to roads / walking people (one "
-                                "flat ground) are not used: pick 4+ points (groundtrack "
-                                "calibrate), on any level")
+        elif terrain is not None and n_veh < 100:
+            # the walking-people fit puts everyone on one flat ground
+            report["reason"] = ("with a terrain model the walking-people fit (one flat ground) "
+                                "is not used, and there is too little traffic for the road "
+                                "fit: pick 4+ points (groundtrack calibrate), on any level")
         elif n_veh < 100 and n_ppl >= 300 and float(prior["height_m"]) < 2.5:
             # tested: from eye height everyone's head sits on the horizon, which says almost
             # nothing about the tilt; the people cues then made the fit worse on one of two clips
@@ -1253,13 +1287,16 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
             if out.exists() and getattr(Homography.load(out), "camera_params", None):
                 starts.append(Homography.load(out).camera_params)
             h, info = fit_to_roads(raw, size, prior, ways, reg, log=log, clicks=clicks,
-                                   extra_starts=starts)
+                                   extra_starts=starts, terrain=terrain)
             info["with_clicks"] = clicks is not None
             report["tried"].append(info)
             if h is not None:
                 h.method = "vehicles on roads" + (" + clicked points" if clicks is not None
                                                   else "")
                 h.method_info = {k: v for k, v in info.items() if k != "extra_starts"}
+            else:
+                report["reason"] = (info.get("reason", "the road fit failed")
+                                    + ": pick 4+ points (groundtrack calibrate)")
     if h is None:
         log("automatic calibration not possible: " + report.get("reason", "see the report"))
         report["result"] = None
