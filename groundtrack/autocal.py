@@ -60,10 +60,12 @@ OVERPASS = "https://overpass-api.de/api/interpreter"
 
 
 # --------------------------------------------------------------------------- 1. same spot
-def match_frames(dst_bgr: np.ndarray, src_bgr: np.ndarray, max_dim: int = 1600):
+def match_frames(dst_bgr: np.ndarray, src_bgr: np.ndarray, max_dim: int = 1600,
+                 inliers_out: list | None = None):
     """Homography taking dst pixels to src pixels (same camera position), with inlier stats.
 
-    Returns (H, n_inliers, inlier_ratio) or (None, 0, 0)."""
+    Returns (H, n_inliers, inlier_ratio) or (None, 0, 0). inliers_out, if given, receives the
+    inlier pixel positions in the dst frame."""
     def prep(img):
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         s = min(1.0, max_dim / max(g.shape))
@@ -89,10 +91,13 @@ def match_frames(dst_bgr: np.ndarray, src_bgr: np.ndarray, max_dim: int = 1600):
     if H is None:
         return None, 0, 0.0
     n = int(mask.sum())
+    if inliers_out is not None:
+        inliers_out.append(a[mask.ravel() > 0])
     return H, n, n / len(good)
 
 
 ROTATION_SPREAD_MAX = 1.08   # same-spot pairs measured 1.00-1.06, moved cameras 1.3-1.4
+DEPTH_SPAN_MIN = 0.20        # matches must span this much of the frame height (p10-p90)
 
 
 def rotation_spread(H: np.ndarray, size_dst, size_src) -> float:
@@ -122,13 +127,23 @@ def transfer(src: Homography, src_frame: np.ndarray, dst_frame: np.ndarray,
     """Calibration for dst_frame from a calibrated src_frame filmed from the same spot.
 
     Returns (Homography or None, info dict)."""
-    H, n, ratio = match_frames(dst_frame, src_frame)
+    pts: list = []
+    H, n, ratio = match_frames(dst_frame, src_frame, inliers_out=pts)
     info = {"method": "same-spot transfer", "inliers": n, "inlier_ratio": round(ratio, 3)}
     if H is None or n < min_inliers or ratio < 0.2:
         info["reason"] = f"frames don't match well enough ({n} inliers, {ratio:.0%})"
         return None, info
     h_dst, w_dst = dst_frame.shape[:2]
     h_src, w_src = src_frame.shape[:2]
+    # the rotation test only sees a camera that moved if the matches lie at several depths:
+    # features all along one distant skyline barely shift with a move of 10 m, the ground does
+    v = pts[0][:, 1] if pts else np.zeros(1)
+    span = float(np.percentile(v, 90) - np.percentile(v, 10)) / h_dst
+    info["depth_span"] = round(span, 3)
+    if span < DEPTH_SPAN_MIN:
+        info["reason"] = (f"the shared features are all far away ({span:.0%} of the frame height):"
+                          " can't tell whether the camera moved; click points instead")
+        return None, info
     spread = rotation_spread(H, (w_dst, h_dst), (w_src, h_src))
     info["rotation_spread"] = round(spread, 3)
     if spread > ROTATION_SPREAD_MAX:

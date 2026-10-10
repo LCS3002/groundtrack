@@ -151,6 +151,9 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
         if ev.button != 1 or ev.xdata is None:
             return
         if ev.inaxes is axv and len(px) == len(world):
+            fh, fw = frame_rgb.shape[:2]
+            if not (0 <= ev.xdata < fw and 0 <= ev.ydata < fh):
+                return                       # outside the picture
             px.append([ev.xdata, ev.ydata])
             _guide_map(ev.xdata, ev.ydata)
         elif ev.inaxes is axm and len(px) == len(world) + 1:

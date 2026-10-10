@@ -52,7 +52,7 @@ def fit_camera(px, world, size, E, N, height, yaw0, pitch0, f0, pos_tol_m=60.0,
     z = None if world_z is None else np.asarray(world_z, float)
     origin = np.array([E, N], float)
     x0 = np.array([yaw0, pitch0, 0.0, np.log(f0), 0.0, 0.0, height])
-    lo = [yaw0 - 40, 0.5, -10, np.log(300), -pos_tol_m, -pos_tol_m, height - height_tol_m]
+    lo = [yaw0 - 40, -10, -10, np.log(300), -pos_tol_m, -pos_tol_m, height - height_tol_m]
     hi = [yaw0 + 40, 60, 10, np.log(30000), pos_tol_m, pos_tol_m, height + height_tol_m]
 
     # weak prior: the camera is near the stated position / height (1 sigma = half the
