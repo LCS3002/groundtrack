@@ -139,3 +139,20 @@ def test_road_fit_projection_matches_the_calibration_on_terrain():
     ok = np.isfinite(a).all(axis=1)
     assert ok.mean() > 0.9
     assert np.abs(a[ok] - b[ok]).max() < 0.05
+
+
+def test_wrong_camera_position_is_found_from_the_clicks():
+    """The configured camera spot is 50 m off: the clicks alone find the camera."""
+    cam = SyntheticCamera(height_m=1.6, pitch_deg=3.0, yaw_deg=20.0, f=1500,
+                          cam_local=(0.0, 0.0), origin=ORIGIN)
+    rng = np.random.default_rng(7)
+    d = rng.uniform(6, 60, 12)
+    a = np.radians(20 + rng.uniform(-25, 25, 12))
+    xy = ORIGIN + np.column_stack([d * np.sin(a), d * np.cos(a)])
+    px = cam.ground_to_pixel(xy) + rng.normal(0, 1.0, (12, 2))
+    wrong = {"E": ORIGIN[0] - 35.0, "N": ORIGIN[1] - 35.0, "height_m": 1.5,
+             "position_tol_m": 10, "height_tol_m": 0.5}
+    h = camera_calibration(px, xy, (cam.width, cam.height), wrong)
+    assert h.rmse_m < 0.5
+    assert np.hypot(h.camera_params["E"] - ORIGIN[0], h.camera_params["N"] - ORIGIN[1]) < 3
+    assert h.camera_moved_m > 40

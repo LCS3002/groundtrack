@@ -372,6 +372,9 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
     blend[ins] = (0.5 * frame_bgr[ins] + 0.5 * mp[ins]).astype(np.uint8)
     cv2.imwrite(str(out_json.with_name(out_json.stem + "_check_video.jpg")), blend)
     log(report(h, warn_m))
+    if getattr(h, "camera_moved_m", None):
+        log(f"NOTE: the clicks put the camera {h.camera_moved_m:.0f} m from camera_position in "
+            "the site config: update it there if this fit looks right")
     if getattr(h, "camera_params", None):
         cp = h.camera_params
         log(f"Fitted camera: direction {cp['yaw_deg']:.1f} deg, tilt {cp['tilt_deg']:.1f} deg, "

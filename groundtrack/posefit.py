@@ -95,6 +95,59 @@ def _project_params(p: dict, world, size, z=None):
     return cam.project(np.column_stack([np.asarray(world, float).reshape(-1, 2), z]))
 
 
+def pose_from_clicks(px, world, size, origin, world_z=None,
+                     hfovs=(30, 40, 50, 60, 70, 80, 95, 110)) -> dict | None:
+    """Camera pose from the clicked pairs alone (perspective-n-point), no position needed.
+
+    Tried for a range of zooms; the one that reprojects the clicks best wins. Returns camera
+    parameters like fit_camera's (E, N, height above the datum, yaw, tilt, roll, focal) plus
+    'median_px', or None. Needs 5+ pairs."""
+    import cv2
+
+    px = np.asarray(px, np.float64).reshape(-1, 2)
+    if len(px) < 5:
+        return None
+    z = np.zeros(len(px)) if world_z is None else np.asarray(world_z, float)
+    obj = np.column_stack([np.asarray(world, float) - origin, z]).astype(np.float64)
+    best = None
+    for hf in hfovs:
+        f = size[0] / 2 / np.tan(np.radians(hf / 2))
+        K = np.array([[f, 0, size[0] / 2], [0, f, size[1] / 2], [0, 0, 1.0]])
+        for flag in (cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_ITERATIVE):
+            try:
+                ok, rvec, tvec, inl = cv2.solvePnPRansac(obj, px, K, None, flags=flag,
+                                                         reprojectionError=15.0,
+                                                         iterationsCount=1000)
+            except cv2.error:
+                continue
+            if not ok or inl is None or len(inl) < 4:
+                continue
+            i = inl.ravel()
+            try:
+                rvec, tvec = cv2.solvePnPRefineLM(obj[i], px[i], K, None, rvec, tvec)
+            except cv2.error:
+                pass
+            R, _ = cv2.Rodrigues(rvec)
+            C = (-R.T @ tvec).ravel()
+            depth = (obj - C) @ R[2]
+            if C[2] <= 0 or (depth <= 0).any():
+                continue                         # under the ground / points behind the camera
+            proj, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
+            err = np.linalg.norm(proj.reshape(-1, 2) - px, axis=1)
+            score = float(np.median(err)) + 50.0 * (1 - len(i) / len(px))
+            if best is None or score < best[0]:
+                fwd, right = R[2], R[0]
+                yaw = np.degrees(np.arctan2(fwd[0], fwd[1]))
+                tilt = np.degrees(np.arcsin(np.clip(-fwd[2], -1, 1)))
+                r0 = np.array([np.cos(np.radians(yaw)), -np.sin(np.radians(yaw)), 0.0])
+                d0 = np.cross(fwd, r0)
+                roll = np.degrees(np.arctan2(right @ d0, right @ r0))
+                best = (score, {"E": origin[0] + C[0], "N": origin[1] + C[1], "height_m": C[2],
+                                "yaw_deg": yaw, "tilt_deg": tilt, "roll_deg": roll,
+                                "focal_px": f, "median_px": float(np.median(err))})
+    return best[1] if best else None
+
+
 def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, terrain=None):
     """Homography from clicked pairs + a known camera position (``camera_position`` in the
     site config: E, N, height_m, optional position_tol_m, height_tol_m, hfov_deg).
@@ -150,6 +203,30 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
                       world_z=None if world_z is None else world_z[inl])
         res = np.linalg.norm(_project_params(p, world, size, world_z) - px, axis=1)
         err = _errors(h)
+    moved = None
+    if len(px) >= 5 and (not np.isfinite(err).all() or
+                         np.sqrt(np.mean(err[inl & np.isfinite(err)] ** 2)) > 2.0
+                         or inl.mean() < 0.6):
+        # the clicks don't fit a camera near the configured spot: find the camera from the
+        # clicks alone, then fit again around it; keep whichever explains the clicks better
+        start = pose_from_clicks(px, world, size, np.array([E, N]), world_z)
+        if start is not None and start["median_px"] < 25:
+            h2, p2, _ = fit(px, world, size, start["E"], start["N"], start["height_m"],
+                            start["yaw_deg"], start["tilt_deg"], start["focal_px"],
+                            pos_tol_m=5.0, height_tol_m=max(2.0, 0.2 * start["height_m"]),
+                            world_z=world_z)
+            # (its position prior is the PnP answer: the datum stays the configured one)
+            e2 = _errors(h2)
+            fin2 = np.isfinite(e2)
+            inl2 = e2 <= max(outlier_m, 3 * np.median(e2[fin2]) if fin2.any() else outlier_m)
+            good1 = err[inl & np.isfinite(err)]
+            good2 = e2[inl2 & fin2]
+            if inl2.sum() > inl.sum() or (inl2.sum() == inl.sum() and len(good2)
+                                          and np.sqrt(np.mean(good2 ** 2))
+                                          < np.sqrt(np.mean(good1 ** 2))):
+                h, p, err, inl = h2, p2, e2, inl2
+                res = np.linalg.norm(_project_params(p, world, size, world_z) - px, axis=1)
+                moved = float(np.hypot(p["E"] - E, p["N"] - N))
     h.points = [{"id": i + 1, "u": float(u), "v": float(v), "E": float(e), "N": float(n),
                  "error_m": float(er) if np.isfinite(er) else None, "loo_error_m": None,
                  "inlier": bool(ok), "pixel_error": float(r)}
@@ -159,4 +236,6 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
     h.max_error_m = float(good.max()) if len(good) else float("inf")
     h.spread = 1.0  # a physical camera cannot degenerate like a free homography
     h.camera_params = {k: float(v) for k, v in p.items()}
+    if moved is not None:
+        h.camera_moved_m = moved     # the configured position was this far off
     return h
