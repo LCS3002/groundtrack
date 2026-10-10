@@ -1202,6 +1202,12 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         if not prior:
             report["reason"] = ('needs the camera position first: groundtrack locate '
                                 '"<building>" --floor N -c <site>.yaml --write')
+        elif terrain is not None:
+            # the road and people fits put everything on one flat ground, and with a terrain
+            # the camera height means something else (above the ground under the camera)
+            report["reason"] = ("with a terrain model the fits to roads / walking people (one "
+                                "flat ground) are not used: pick 4+ points (groundtrack "
+                                "calibrate), on any level")
         elif n_veh < 100 and n_ppl >= 300 and float(prior["height_m"]) < 2.5:
             # tested: from eye height everyone's head sits on the horizon, which says almost
             # nothing about the tilt; the people cues then made the fit worse on one of two clips
