@@ -96,12 +96,13 @@ def _project_params(p: dict, world, size, z=None):
 
 
 def pose_from_clicks(px, world, size, origin, world_z=None,
-                     hfovs=(30, 40, 50, 60, 70, 80, 95, 110)) -> dict | None:
+                     hfovs=(30, 40, 50, 60, 70, 80, 95, 110), ground=None) -> dict | None:
     """Camera pose from the clicked pairs alone (perspective-n-point), no position needed.
 
     Tried for a range of zooms; the one that reprojects the clicks best wins. Returns camera
     parameters like fit_camera's (E, N, height above the datum, yaw, tilt, roll, focal) plus
-    'median_px', or None. Needs 5+ pairs."""
+    'median_px', or None. Needs 5+ pairs. ground: local (E, N) -> ground height above the
+    datum (a terrain); the camera must stand above the ground where it is, not the datum."""
     import cv2
 
     px = np.asarray(px, np.float64).reshape(-1, 2)
@@ -130,7 +131,8 @@ def pose_from_clicks(px, world, size, origin, world_z=None,
             R, _ = cv2.Rodrigues(rvec)
             C = (-R.T @ tvec).ravel()
             depth = (obj - C) @ R[2]
-            if C[2] <= 0 or (depth <= 0).any():
+            g = 0.0 if ground is None else float(np.nan_to_num(ground(C[None, :2])[0]))
+            if C[2] - g <= 0.3 or (depth <= 0).any():
                 continue                         # under the ground / points behind the camera
             proj, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
             err = np.linalg.norm(proj.reshape(-1, 2) - px, axis=1)
@@ -174,10 +176,10 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
         world_z = terrain.height(world) - z0
         world_z = np.where(np.isfinite(world_z), world_z, 0.0)
 
-    def fit(*a, world_z=None, **k):
+    def fit(*a, world_z=None, datum=None, **k):
         hh, pp, rr = fit_camera(*a, world_z=world_z, **k)
         if terrain is not None:
-            hh.set_terrain(terrain, z0)
+            hh.set_terrain(terrain, z0 if datum is None else datum)
         return hh, pp, rr
 
     d = world - [E, N]
@@ -209,13 +211,22 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
                          or inl.mean() < 0.6):
         # the clicks don't fit a camera near the configured spot: find the camera from the
         # clicks alone, then fit again around it; keep whichever explains the clicks better
-        start = pose_from_clicks(px, world, size, np.array([E, N]), world_z)
+        ground = None if terrain is None else \
+            (lambda xy: terrain.height(np.asarray(xy) + [E, N]) - z0)
+        start = pose_from_clicks(px, world, size, np.array([E, N]), world_z, ground=ground)
         if start is not None and start["median_px"] < 25:
-            h2, p2, _ = fit(px, world, size, start["E"], start["N"], start["height_m"],
+            # the datum moves with the camera: the ground where it actually stood
+            dz, wz2, z0b = 0.0, world_z, None
+            if terrain is not None:
+                zc = float(terrain.height(np.array([[start["E"], start["N"]]]))[0])
+                if np.isfinite(zc):
+                    dz, z0b = zc - z0, zc
+                    wz2 = world_z - dz
+            hs = start["height_m"] - dz
+            h2, p2, _ = fit(px, world, size, start["E"], start["N"], hs,
                             start["yaw_deg"], start["tilt_deg"], start["focal_px"],
-                            pos_tol_m=5.0, height_tol_m=max(2.0, 0.2 * start["height_m"]),
-                            world_z=world_z)
-            # (its position prior is the PnP answer: the datum stays the configured one)
+                            pos_tol_m=5.0, height_tol_m=max(1.0, 0.2 * hs),
+                            world_z=wz2, datum=z0b)
             e2 = _errors(h2)
             fin2 = np.isfinite(e2)
             inl2 = e2 <= max(outlier_m, 3 * np.median(e2[fin2]) if fin2.any() else outlier_m)
@@ -225,7 +236,7 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
                                           and np.sqrt(np.mean(good2 ** 2))
                                           < np.sqrt(np.mean(good1 ** 2))):
                 h, p, err, inl = h2, p2, e2, inl2
-                res = np.linalg.norm(_project_params(p, world, size, world_z) - px, axis=1)
+                res = np.linalg.norm(_project_params(p, world, size, wz2) - px, axis=1)
                 moved = float(np.hypot(p["E"] - E, p["N"] - N))
     h.points = [{"id": i + 1, "u": float(u), "v": float(v), "E": float(e), "N": float(n),
                  "error_m": float(er) if np.isfinite(er) else None, "loo_error_m": None,
