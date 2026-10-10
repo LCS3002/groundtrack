@@ -720,7 +720,8 @@ RMS. Real footage will be worse; that's what this check is for.
   delete the copies on your phone and in its cloud backup (iCloud / Google Photos "Recently
   deleted"), and any unblurred overlay video. Keep the calibration `.json` and `_points.csv`
   files: they hold no personal data. The check images next to them (`*_check.png`,
-  `*_check_video.jpg`) show the unblurred calibration frame: delete them with the footage.
+  `*_check_video.jpg`) show the calibration frame. People and plates in it are blurred when
+  the clip was tracked before calibrating; if not, delete the check images with the footage.
 * If the footage might show identifiable people, follow your institution's ethics and data
   protection guidance (UK GDPR). Signage at the site and short retention periods are standard
   practice.

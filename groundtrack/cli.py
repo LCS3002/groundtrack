@@ -105,7 +105,23 @@ def cmd_calibrate(args):
                     points_csv=Path(args.points_csv) if args.points_csv else None,
                     interactive=not args.no_gui, ransac_thresh_m=args.ransac_m,
                     warn_m=args.warn_m, camera_prior=cfg.get("camera_position"),
-                    terrain=resolve_terrain(cfg))
+                    terrain=resolve_terrain(cfg), hide=_privacy_boxes_of(cfg))
+
+
+def _privacy_boxes_of(cfg):
+    """People / number plates in the site's latest tracked run, to blur saved check images."""
+    import pandas as pd
+
+    from .autocal import _latest_run
+    from .debug_video import privacy_boxes
+    from .layout import open_run
+
+    rd = _latest_run(cfg)
+    if rd is None or not open_run(rd).raw_tracks.exists():
+        return None
+    dv = cfg.get("debug_video") or {}
+    return privacy_boxes(pd.read_csv(open_run(rd).raw_tracks), bool(dv.get("blur_people", True)),
+                         bool(dv.get("blur_plates", True)))
 
 
 def cmd_autocalibrate(args):

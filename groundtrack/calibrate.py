@@ -280,7 +280,7 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
                     lens: Lens | None = None, points_csv: Path | None = None,
                     interactive: bool = True, ransac_thresh_m: float = 1.0,
                     warn_m: float = 0.5, camera_prior: dict | None = None,
-                    log=print, terrain=None) -> Homography:
+                    log=print, terrain=None, hide=None) -> Homography:
     frame_bgr = read_frame(video, frame)
     size = (frame_bgr.shape[1], frame_bgr.shape[0])
     if camera_prior:
@@ -342,6 +342,12 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
     h.reference_frame = int(frame)
     save_points_csv(default_csv, px, world)
     h.save(out_json)
+    if hide is not None:       # the saved check images: people and number plates blurred
+        from .debug_video import blur_box
+
+        frame_bgr = frame_bgr.copy()
+        for r in hide[hide["frame"] == int(frame)].itertuples():
+            blur_box(frame_bgr, r.x1, r.y1, r.x2, r.y2)
     check_png = out_json.with_name(out_json.stem + "_check.png")
     save_check_image(check_png, frame_bgr, h, raster)
     from .overlay_check import map_in_video

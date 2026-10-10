@@ -1334,6 +1334,14 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         mp, ins = map_in_video(frame, h, load_geotiff(cfg.path("geotiff")))
         blend = frame.copy()
         blend[ins] = (0.5 * frame[ins] + 0.5 * mp[ins]).astype(np.uint8)
+        if raw is not None:                  # people and number plates blurred
+            from .debug_video import blur_box, privacy_boxes
+
+            dv = cfg.get("debug_video") or {}
+            hide = privacy_boxes(raw, bool(dv.get("blur_people", True)),
+                                 bool(dv.get("blur_plates", True)))
+            for r in hide[hide["frame"] == int(frame_idx)].itertuples():
+                blur_box(blend, r.x1, r.y1, r.x2, r.y2)
         cv2.imwrite(str(target.with_name(target.stem + "_check_video.jpg")), blend)
     except Exception as e:  # the check image is a convenience
         log(f"  (check image skipped: {e})")
