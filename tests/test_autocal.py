@@ -247,3 +247,26 @@ def test_lane_check_measures_a_known_rotation():
     assert chk is not None
     assert chk["rotation_vs_painted_lanes_deg"] == pytest.approx(2.0, abs=0.5)
     assert chk["sideways_scatter_cm"] < 1
+
+
+def test_rotation_spread_tells_same_spot_from_a_moved_camera():
+    """Two views from one spot differ by a rotation (and zoom); from two spots, a homography
+    fitted to the ground is not a rotation - the transfer must refuse it."""
+    import cv2
+
+    from groundtrack.autocal import ROTATION_SPREAD_MAX, rotation_spread
+    from groundtrack.demo import ORIGIN, SyntheticCamera
+
+    rng = np.random.default_rng(2)
+    pts = np.column_stack([rng.uniform(-30, 30, 300), rng.uniform(10, 120, 300),
+                           rng.uniform(0, 15, 300)]) + np.r_[ORIGIN, 0]
+    ground = pts.copy()
+    ground[:, 2] = 0
+    a = SyntheticCamera(height_m=8.0, pitch_deg=15, yaw_deg=0, f=1400, cam_local=(0, 0))
+    turned = SyntheticCamera(height_m=8.0, pitch_deg=12, yaw_deg=9, f=1900, cam_local=(0, 0))
+    moved = SyntheticCamera(height_m=11.0, pitch_deg=15, yaw_deg=4, f=1400, cam_local=(6, -4))
+    H_same, _ = cv2.findHomography(turned.project(pts), a.project(pts))     # any depth
+    H_moved, _ = cv2.findHomography(moved.project(ground), a.project(ground))  # ground only
+    size = (1920, 1080)
+    assert rotation_spread(H_same, size, size) < 1.02
+    assert rotation_spread(H_moved, size, size) > ROTATION_SPREAD_MAX

@@ -92,6 +92,31 @@ def match_frames(dst_bgr: np.ndarray, src_bgr: np.ndarray, max_dim: int = 1600):
     return H, n, n / len(good)
 
 
+ROTATION_SPREAD_MAX = 1.08   # same-spot pairs measured 1.00-1.06, moved cameras 1.3-1.4
+
+
+def rotation_spread(H: np.ndarray, size_dst, size_src) -> float:
+    """How far a frame-to-frame homography is from a pure camera rotation: 1.0 = exactly
+    (the same spot, any zoom). Between two spots the near ground shows parallax: one
+    homography then fits the matched features (often distant buildings) but not the ground,
+    and a transferred calibration would be wrong there, however many features match.
+
+    K_src^-1 H K_dst is a scaled rotation for the right focal lengths; the smallest ratio of
+    its largest to smallest singular value over a grid of focal lengths is returned."""
+    fs = np.geomspace(300.0, 30000.0, 150)         # 3 % steps
+
+    def Ks(size):
+        K = np.zeros((len(fs), 3, 3))
+        K[:, 0, 0] = K[:, 1, 1] = fs
+        K[:, 0, 2], K[:, 1, 2], K[:, 2, 2] = size[0] / 2, size[1] / 2, 1.0
+        return K
+
+    Kd, Ks_inv = Ks(size_dst), np.linalg.inv(Ks(size_src))
+    M = Ks_inv[None] @ H[None, None] @ Kd[:, None]          # (dst focal, src focal, 3, 3)
+    s = np.linalg.svd(M, compute_uv=False)
+    return float(np.min(s[..., 0] / np.maximum(s[..., 2], 1e-12)))
+
+
 def transfer(src: Homography, src_frame: np.ndarray, dst_frame: np.ndarray,
              camera_prior: dict | None = None, min_inliers: int = 40, log=print):
     """Calibration for dst_frame from a calibrated src_frame filmed from the same spot.
@@ -104,6 +129,12 @@ def transfer(src: Homography, src_frame: np.ndarray, dst_frame: np.ndarray,
         return None, info
     h_dst, w_dst = dst_frame.shape[:2]
     h_src, w_src = src_frame.shape[:2]
+    spread = rotation_spread(H, (w_dst, h_dst), (w_src, h_src))
+    info["rotation_spread"] = round(spread, 3)
+    if spread > ROTATION_SPREAD_MAX:
+        info["reason"] = (f"filmed from a different spot: the views differ by more than a "
+                          f"camera turn (parallax; rotation spread {spread:.2f})")
+        return None, info
     # synthetic correspondences: a grid over the new frame, through the old calibration
     gu, gv = np.meshgrid(np.linspace(0.03, 0.97, 32) * w_dst, np.linspace(0.03, 0.97, 18) * h_dst)
     px = np.column_stack([gu.ravel(), gv.ravel()])
