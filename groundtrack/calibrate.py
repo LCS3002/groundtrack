@@ -132,7 +132,8 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
                 status += f" | worst #{worst['id']} " + (f"{we:.2f} m" if we is not None
                                                           else "behind camera")
                 if h.spread < 0.3:
-                    status += " | POINTS ALMOST IN A LINE: add some far left / right"
+                    status += (" | POINTS ALONG ONE LINE: add some to the left / right and "
+                               "nearer / further")
             except Exception as e:  # noqa: BLE001
                 status += f" | fit failed: {e}"
         if state.get("set_cam"):

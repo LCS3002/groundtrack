@@ -245,7 +245,11 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
     good = err[inl & np.isfinite(err)]
     h.rmse_m = float(np.sqrt(np.mean(good ** 2))) if len(good) else float("inf")
     h.max_error_m = float(good.max()) if len(good) else float("inf")
-    h.spread = 1.0  # a physical camera cannot degenerate like a free homography
+    # a physical camera cannot degenerate like a free homography, but points along one line
+    # still leave zoom against tilt loose: report it (the picker warns live)
+    from .homography import point_spread
+
+    h.spread = point_spread(world[inl])
     h.camera_params = {k: float(v) for k, v in p.items()}
     if moved is not None:
         h.camera_moved_m = moved     # the configured position was this far off
