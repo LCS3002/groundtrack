@@ -101,11 +101,16 @@ def cmd_calibrate(args):
         raise SystemExit("Set `homography:` (output path) in the site config")
     from .terrain import resolve_terrain
 
-    run_calibration(video, cfg.path("geotiff"), out, frame=frame or 0, lens=lens,
-                    points_csv=Path(args.points_csv) if args.points_csv else None,
-                    interactive=not args.no_gui, ransac_thresh_m=args.ransac_m,
-                    warn_m=args.warn_m, camera_prior=cfg.get("camera_position"),
-                    terrain=resolve_terrain(cfg), hide=_privacy_boxes_of(cfg))
+    h = run_calibration(video, cfg.path("geotiff"), out, frame=frame or 0, lens=lens,
+                        points_csv=Path(args.points_csv) if args.points_csv else None,
+                        interactive=not args.no_gui, ransac_thresh_m=args.ransac_m,
+                        warn_m=args.warn_m, camera_prior=cfg.get("camera_position"),
+                        terrain=resolve_terrain(cfg), hide=_privacy_boxes_of(cfg))
+    if h is not None and getattr(h, "camera_prior_set", None):
+        from .locate import write_camera_position
+
+        write_camera_position(args.config, h.camera_prior_set, note="set on the map in the picker")
+        print(f"camera position saved to {args.config}")
 
 
 def _privacy_boxes_of(cfg):

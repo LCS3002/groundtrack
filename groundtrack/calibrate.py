@@ -54,11 +54,15 @@ def _scroll_zoom(ax, event, base=1.4):
 
 def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_world=None,
                 warn_m: float = 0.5, fit_fn=None, min_live: int = 5, camera_xy=None,
-                view_m: float = 90.0):
+                view_m: float = 90.0, on_camera=None):
     """Open the two-pane picker. Returns (px, world) arrays, or None if cancelled.
 
-    camera_xy: the known camera position: the map opens around it (view_m each way), marked."""
+    camera_xy: the known camera position: the map opens around it (view_m each way), marked.
+    on_camera(E, N): called when the user marks where they stood (key c, then a map click)."""
     import matplotlib.pyplot as plt
+
+    for k in ("keymap.back", "keymap.forward"):        # c / v: our keys, not view history
+        plt.rcParams[k] = [x for x in plt.rcParams[k] if x not in ("c", "v")]
 
     px: list[list[float]] = [list(p) for p in (init_px if init_px is not None else [])]
     world: list[list[float]] = [list(p) for p in (init_world if init_world is not None else [])]
@@ -71,11 +75,19 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
     axm.imshow(raster.image, extent=raster.extent, interpolation="bilinear")
     axm.set_title(f"MAP  (EPSG:{raster.epsg})")
     axm.ticklabel_format(useOffset=False, style="plain")
+    cam_art: list = []
+
+    def draw_camera(ce, cn, label):
+        for a in cam_art:
+            a.remove()
+        cam_art.clear()
+        cam_art.append(axm.plot(ce, cn, "^", color="white", mec="black", ms=11, mew=1.2)[0])
+        cam_art.append(axm.annotate(label, (ce, cn), xytext=(8, -14), textcoords="offset points",
+                                    color="white", fontsize=9, weight="bold"))
+
     if camera_xy is not None:      # start where the camera was, not on the whole map
         ce, cn = (float(v) for v in camera_xy)
-        axm.plot(ce, cn, "^", color="white", mec="black", ms=11, mew=1.2)
-        axm.annotate("camera (approx.)", (ce, cn), xytext=(8, -14), textcoords="offset points",
-                     color="white", fontsize=9, weight="bold")
+        draw_camera(ce, cn, "camera (approx.)  - press c to set")
         axm.set_xlim(max(ce - view_m, raster.left), min(ce + view_m, raster.right))
         axm.set_ylim(max(cn - view_m, raster.bottom), min(cn + view_m, raster.top))
     artists: list = []
@@ -123,9 +135,11 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
                     status += " | POINTS ALMOST IN A LINE: add some far left / right"
             except Exception as e:  # noqa: BLE001
                 status += f" | fit failed: {e}"
+        if state.get("set_cam"):
+            status = "click on the MAP where you were standing (the camera)"
         fig.suptitle(status + "\nleft-click add · right-click a point: delete pair · u undo · "
-                     "scroll zoom · "
-                     "enter save · esc cancel", fontsize=11)
+                     "scroll zoom · " + ("c set where you stood · " if on_camera else "")
+                     + "enter save · esc cancel", fontsize=11)
         fig.canvas.draw_idle()
 
     def on_click(ev):
@@ -149,6 +163,13 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
             undo()
             return
         if ev.button != 1 or ev.xdata is None:
+            return
+        if state.get("set_cam"):
+            if ev.inaxes is axm:
+                state["set_cam"] = False
+                on_camera(float(ev.xdata), float(ev.ydata))
+                draw_camera(ev.xdata, ev.ydata, "camera (you)")
+                redraw()
             return
         if ev.inaxes is axv and len(px) == len(world):
             fh, fw = frame_rgb.shape[:2]
@@ -194,6 +215,9 @@ def pick_points(frame_rgb: np.ndarray, raster: GeoRaster, init_px=None, init_wor
     def on_key(ev):
         if ev.key in ("u", "backspace"):
             undo()
+        elif ev.key == "c" and on_camera is not None:
+            state["set_cam"] = not state.get("set_cam")
+            redraw()
         elif ev.key == "enter":
             n = min(len(px), len(world))
             if n < 6 and not state.get("confirm"):
@@ -296,7 +320,9 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
                     log=print, terrain=None, hide=None) -> Homography:
     frame_bgr = read_frame(video, frame)
     size = (frame_bgr.shape[1], frame_bgr.shape[0])
+    camera_set: dict = {}
     if camera_prior:
+        camera_prior = dict(camera_prior)
         from .posefit import camera_calibration
 
         def fit_fn(a, b):
@@ -327,9 +353,16 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
         import matplotlib.pyplot as plt  # noqa: F401  (ensure an interactive backend loads)
 
         cam_xy = (camera_prior["E"], camera_prior["N"]) if camera_prior else None
+
+        def on_camera(e, n):     # the user marked where they stood: trust it to a few metres
+            camera_prior.update(E=round(e, 1), N=round(n, 1), position_tol_m=min(
+                float(camera_prior.get("position_tol_m", 15.0)), 4.0))
+            camera_set["by_user"] = True
+            log(f"camera position set on the map: E {e:.1f}, N {n:.1f}")
+
         res = pick_points(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), raster, init_px,
                           init_world, warn_m, fit_fn=fit_fn, min_live=min_live,
-                          camera_xy=cam_xy)
+                          camera_xy=cam_xy, on_camera=on_camera if camera_prior else None)
         if res is None:
             raise SystemExit("Calibration cancelled; nothing saved.")
         px, world = res
@@ -355,6 +388,8 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
         h = fit_homography(px, world, ransac_thresh_m=ransac_thresh_m, image_size=size,
                            undistorted=lens is not None, crs=f"EPSG:{raster.epsg}")
     h.reference_frame = int(frame)
+    if camera_set.get("by_user"):
+        h.camera_prior_set = dict(camera_prior)        # cli writes it into the site config
     save_points_csv(default_csv, px, world)
     h.save(out_json)
     if hide is not None:       # the saved check images: people and number plates blurred
