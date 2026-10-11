@@ -291,13 +291,17 @@ def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log
         return None
     if chk:
         z, err = chk["implied_person_height_m"], chk["scale_error_pct"]
-        verdict = "consistent" if abs(err) <= 10 else "CHECK the calibration"
+        share = chk.get("consistent_share")
+        good = abs(err) <= 10 and (share is None or share >= 0.8)
+        verdict = "consistent" if good else "CHECK the calibration"
+        bands = "  ".join(f"{k}: {v:.2f}" for k, v in (chk.get("by_distance_m") or {}).items())
         log(f"  calibration check: people come out {z:.2f} m tall (expected ~{PERSON_HEIGHT_M} m,"
-            f" {err:+.0f}%) -> {verdict}")
-        if abs(err) > 10:
-            log("    with a camera almost level with the ground this mostly reflects the camera "
-                "height / tilt; ground positions can still be right. Re-click spread-out points "
-                "or check camera_position.height_m.")
+            f" {err:+.0f}%)" + (f"; by distance {bands}" if bands else "") + f" -> {verdict}")
+        if not good:
+            log("    on a right calibration people are ~1.7 m near and far; bands that drift "
+                "apart point at the tilt / zoom / camera height: re-click well-spread points "
+                "on flat ground (not on steps or walls), or limit projection.max_range_m to the "
+                "distances that check out.")
     return chk
 
 

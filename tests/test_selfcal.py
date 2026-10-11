@@ -70,3 +70,31 @@ def test_plane_homography_puts_raised_points_back():
     assert np.abs(on_plane - xy).max() < 0.05
     # treated as ground, the same pixels land several metres further from the camera
     assert np.median(np.linalg.norm(on_ground - xy, axis=1)) > 5
+
+
+def test_people_by_distance_tell_a_wrong_tilt():
+    """Right camera: people ~1.7 m in every distance band. Tilt 2 deg off: the bands drift."""
+    from groundtrack.posefit import pose_homography
+
+    cam = SyntheticCamera(height_m=1.6, pitch_deg=4.0, cam_local=(0.0, 0.0), f=1400)
+    rng = np.random.default_rng(3)
+    n = 3000
+    feet = np.column_stack([rng.uniform(-8, 8, n), rng.uniform(5, 70, n)]) + ORIGIN
+    foot_px = cam.ground_to_pixel(feet)
+    top_px = cam.project(np.column_stack([feet, np.full(n, 1.70)]))
+    raw = pd.DataFrame({"frame": np.arange(n), "track_id": np.arange(n), "class": "person",
+                        "x1": foot_px[:, 0] - 10, "x2": foot_px[:, 0] + 10,
+                        "y1": top_px[:, 1], "y2": foot_px[:, 1], "predicted": False})
+    raw = raw[(raw.y2 < 1075) & (raw.y1 > 3)]
+
+    def h_with(pitch):
+        h = pose_homography(ORIGIN[0], ORIGIN[1], 1.6, 0.0, pitch, 1400.0, (1920, 1080))
+        h.camera_params = {"E": ORIGIN[0], "N": ORIGIN[1], "height_m": 1.6, "yaw_deg": 0.0,
+                           "tilt_deg": pitch, "roll_deg": 0.0, "focal_px": 1400.0}
+        return h
+
+    right = people_check(raw, h_with(4.0))
+    wrong = people_check(raw, h_with(6.0))
+    assert right["consistent_share"] == 1.0
+    assert all(abs(v - 1.7) < 0.1 for v in right["by_distance_m"].values())
+    assert wrong["consistent_share"] < 0.5

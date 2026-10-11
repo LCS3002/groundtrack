@@ -15,6 +15,7 @@ import pandas as pd
 from .homography import Homography
 
 PERSON_HEIGHT_M = 1.70
+DISTANCE_BANDS = ((0, 10), (10, 20), (20, 40), (40, 80), (80, 160))
 
 
 def camera_matrix(h: Homography) -> np.ndarray | None:
@@ -75,6 +76,21 @@ def people_check(raw: pd.DataFrame, h: Homography, registration: dict | None = N
             gw = h.to_world(foot)
             far = np.hypot(gw[:, 0] - cam["E"], gw[:, 1] - cam["N"]) > max_range_m
             z = np.where(far, np.nan, z)
+    # by distance: a right calibration gives ~1.7 m near and far (checked on eye-level and
+    # raised clips alike); a wrong tilt / zoom / height makes the bands drift apart
+    by_d, n_ok, n_all = {}, 0, 0
+    cam = getattr(h, "camera_params", None) or h.camera()
+    if cam:
+        gw = h.to_world(foot)
+        dist = np.hypot(gw[:, 0] - cam["E"], gw[:, 1] - cam["N"])
+        valid = np.isfinite(z) & (z > 0.3) & (z < 5.0)
+        for lo, hi in DISTANCE_BANDS:
+            s = valid & (dist >= lo) & (dist < hi)
+            if s.sum() >= 30:
+                m = float(np.median(z[s]))
+                by_d[f"{lo}-{hi} m"] = round(m, 2)
+                n_all += int(s.sum())
+                n_ok += int(s.sum()) if abs(m / PERSON_HEIGHT_M - 1) <= 0.12 else 0
     z = z[np.isfinite(z) & (z > 0.3) & (z < 5.0)]
     if len(z) < 30:
         return None
@@ -83,6 +99,8 @@ def people_check(raw: pd.DataFrame, h: Homography, registration: dict | None = N
             "iqr_m": [round(float(np.percentile(z, 25)), 2), round(float(np.percentile(z, 75)), 2)],
             "n": int(len(z)),
             "scale_error_pct": round(100 * (med / PERSON_HEIGHT_M - 1), 1),
+            "by_distance_m": by_d,
+            "consistent_share": round(n_ok / n_all, 2) if n_all else None,
             "note": "median height people would need to have under this calibration; "
                     "~1.7 m means the calibration is consistent"}
 

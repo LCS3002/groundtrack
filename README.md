@@ -660,10 +660,14 @@ RMS. Real footage will be worse; that's what this check is for.
   as the effect being measured (`test_lane_check_measures_a_known_rotation`).
 * **People check.** Every walking person is a measuring stick. Each run computes how tall the
   detected people would have to be under the calibration, writes it to `stats.json`
-  (`calibration_check`) and logs it. About 1.7 m means the calibration is consistent. A large
-  error from a high camera points at the zoom or the tilt. From eye height, it mostly reflects
-  the camera height and can be off while the ground positions are still fine (the click error is
-  the better measure there).
+  (`calibration_check`) and logs it, overall and **by distance** (0-10, 10-20, 20-40, 40-80 m).
+  On a right calibration people come out ~1.7 m in every band, from eye height as well as from
+  above: on this project's well-clicked clips every band was 1.6-1.8 m. A wrong tilt, zoom or
+  camera height makes the bands drift apart (near people too short, far ones too tall, or the
+  reverse), even when the clicked points fit to a few decimetres; `consistent_share` is the
+  share of people in bands within 12 % of 1.7 m. On the Trafalgar footage this caught clicked
+  calibrations that looked fine by their click error and failed between the clicks. Where only
+  the near bands check out, `projection: max_range_m` keeps just those distances.
 * **Flat ground.** A homography maps one plane. Steps, ramps or a cambered road put objects off
   that plane, and they get projected as if they were on it. Set `terrain: auto` (§3.3) and the
   ground follows the Environment Agency's 1 m LiDAR model instead: terraces, steps and slopes.
