@@ -383,7 +383,11 @@ def run_calibration(video: Path, geotiff: Path, out_json: Path, frame: int = 0,
     if camera_prior:
         from .posefit import camera_calibration
 
-        h = camera_calibration(px, world, size, camera_prior, terrain=terrain)
+        h = camera_calibration(px, world, size, camera_prior, terrain=terrain,
+                               consensus=True)
+        if getattr(h, "consensus_dropped", None):
+            log(f"clicks {h.consensus_dropped} disagree with the rest (one camera explains the "
+                f"other {len(px) - len(h.consensus_dropped)} to within 15 px): left out")
         h.undistorted, h.crs = lens is not None, f"EPSG:{raster.epsg}"
     else:
         h = fit_homography(px, world, ransac_thresh_m=ransac_thresh_m, image_size=size,

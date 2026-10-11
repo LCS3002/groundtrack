@@ -149,7 +149,15 @@ practice this changes a lot:
 
 * **3 good clicks are enough**, and the guided zoom starts after 2.
 * **Bad clicks stand out.** A rooftop or a mis-click can't be explained by any camera at that
-  spot, so it gets flagged and the fit is redone without it.
+  spot, so it gets flagged and the fit is redone without it. With 7+ pairs, saving also looks
+  for the largest group of clicks one camera explains (random 5-point subsets, judged in
+  pixels) and fits on that, so a few wrong clicks can't drag the fit off before they are
+  judged; the log names the clicks it left out. From eye height this matters: in tests, four
+  wrong clicks out of twelve moved the plain fit by 3-50 m, the consensus kept exactly the
+  eight good ones (under 0.7 m).
+* **Mark where you stood.** In the picker, press `c` and click the map where you were: the fit
+  starts there and the site config keeps it. If the clicks don't fit a camera near the
+  configured spot at all, the camera is found from the clicks alone (perspective-n-point).
 * **No degenerate fits.** Points along one line, telephoto views from far away, and very low
   viewpoints all stop being a problem.
 * **The report shows the fitted camera** (direction, tilt, field of view, height), so you can

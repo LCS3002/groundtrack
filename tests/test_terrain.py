@@ -156,3 +156,22 @@ def test_wrong_camera_position_is_found_from_the_clicks():
     assert h.rmse_m < 0.5
     assert np.hypot(h.camera_params["E"] - ORIGIN[0], h.camera_params["N"] - ORIGIN[1]) < 3
     assert h.camera_moved_m > 40
+
+
+def test_consensus_drops_wrong_clicks_before_they_bend_the_fit():
+    """Eye level, four of twelve clicks matched to the wrong feature 4-10 m away: fitting
+    everything first is dragged tens of metres off; the consensus keeps exactly the good 8."""
+    cam = SyntheticCamera(height_m=1.6, pitch_deg=3.0, yaw_deg=0.0, f=1400,
+                          cam_local=(0.0, 0.0), origin=ORIGIN)
+    rng = np.random.default_rng(11)
+    xy = ORIGIN + np.column_stack([rng.uniform(-12, 12, 12), rng.uniform(6, 35, 12)])
+    px = cam.ground_to_pixel(xy) + rng.normal(0, 1.0, (12, 2))
+    wrong = xy.copy()
+    wrong[:4] += rng.uniform(4, 10, (4, 2)) * rng.choice([-1, 1], (4, 2))
+    prior = {"E": ORIGIN[0], "N": ORIGIN[1], "height_m": 1.5, "position_tol_m": 8,
+             "height_tol_m": 0.5}
+    plain = camera_calibration(px, wrong, (1920, 1080), prior)
+    assert np.nanmax(np.linalg.norm(plain.to_world(px[4:]) - xy[4:], axis=1)) > 5
+    h = camera_calibration(px, wrong, (1920, 1080), prior, consensus=True)
+    assert sorted(h.consensus_dropped) == [1, 2, 3, 4]
+    assert np.linalg.norm(h.to_world(px[4:]) - xy[4:], axis=1).max() < 0.5

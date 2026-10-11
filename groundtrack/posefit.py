@@ -150,7 +150,46 @@ def pose_from_clicks(px, world, size, origin, world_z=None,
     return best[1] if best else None
 
 
-def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, terrain=None):
+def consensus_clicks(px, world, size, prior: dict, terrain=None, inlier_px: float = 15.0,
+                     n_subsets: int = 120, seed: int = 0) -> np.ndarray:
+    """The largest set of clicked pairs one camera explains, judged in pixels.
+
+    Fits cameras to many random 5-point subsets and keeps the one that reprojects most clicks
+    within inlier_px (ties: smaller median error). A wrong click can no longer bend the fit
+    before it is judged, as it can when outliers are found after fitting everything.
+    Returns a boolean mask over the pairs."""
+    import itertools
+
+    px = np.asarray(px, float).reshape(-1, 2)
+    world = np.asarray(world, float).reshape(-1, 2)
+    n = len(px)
+    combos = list(itertools.combinations(range(n), 5)) if n <= 12 else None
+    rng = np.random.default_rng(seed)
+    if combos is not None and len(combos) <= n_subsets:
+        subsets = combos
+    else:
+        picked: set = set()
+        while len(picked) < n_subsets:
+            picked.add(tuple(sorted(rng.choice(n, 5, replace=False))))
+        subsets = sorted(picked)
+    best = None
+    for s in subsets:
+        s = list(s)
+        try:
+            h = camera_calibration(px[s], world[s], size, prior, terrain=terrain)
+        except Exception:      # a degenerate subset
+            continue
+        pe = np.linalg.norm(h.to_pixel(world) - px, axis=1)
+        pe = np.where(np.isfinite(pe), pe, 1e9)
+        inl = pe < inlier_px
+        key = (int(inl.sum()), -float(np.median(pe[inl])) if inl.any() else -1e9)
+        if best is None or key > best[0]:
+            best = (key, inl)
+    return best[1] if best is not None else np.ones(n, bool)
+
+
+def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, terrain=None,
+                       consensus: bool = False):
     """Homography from clicked pairs + a known camera position (``camera_position`` in the
     site config: E, N, height_m, optional position_tol_m, height_tol_m, hfov_deg).
 
@@ -159,11 +198,33 @@ def camera_calibration(px, world, size, prior: dict, outlier_m: float = 3.0, ter
 
     terrain: a terrain.Terrain. The camera height is then above the ground at the camera
     position (prior ``ground_z_m`` overrides that datum), and the ground follows the model.
+
+    consensus: with 7+ pairs, first find the largest set of clicks one camera explains
+    (consensus_clicks) and fit on that; the others are reported as outliers. Slower: meant
+    for the final fit, not for live feedback.
     """
     px = np.asarray(px, float).reshape(-1, 2)
     world = np.asarray(world, float).reshape(-1, 2)
     if len(px) < 3:
         raise ValueError("Need at least 3 point pairs with a known camera position")
+    if consensus and len(px) >= 7:
+        keep = consensus_clicks(px, world, size, prior, terrain)
+        plain = camera_calibration(px, world, size, prior, outlier_m, terrain)
+        plain_pe = np.linalg.norm(plain.to_pixel(world) - px, axis=1)
+        if 5 <= keep.sum() < len(px) and keep.sum() > int((np.nan_to_num(plain_pe, nan=1e9)
+                                                          < 15.0).sum()):
+            h = camera_calibration(px[keep], world[keep], size, prior, outlier_m, terrain)
+            err = np.linalg.norm(h.to_world(px) - world, axis=1)
+            res = np.linalg.norm(h.to_pixel(world) - px, axis=1)
+            sub = {i: p for i, p in zip(np.flatnonzero(keep), h.points)}
+            h.points = [{"id": i + 1, "u": float(u), "v": float(v), "E": float(e), "N": float(n),
+                         "error_m": float(er) if np.isfinite(er) else None, "loo_error_m": None,
+                         "inlier": bool(i in sub and sub[i]["inlier"]),
+                         "pixel_error": float(r) if np.isfinite(r) else None}
+                        for i, ((u, v), (e, n), er, r) in enumerate(zip(px, world, err, res))]
+            h.consensus_dropped = [i + 1 for i in np.flatnonzero(~keep)]
+            return h
+        return plain
     E, N, H = float(prior["E"]), float(prior["N"]), float(prior["height_m"])
     z0 = world_z = None
     if terrain is not None:
