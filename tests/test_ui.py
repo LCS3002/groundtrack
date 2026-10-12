@@ -124,3 +124,27 @@ def test_http_guards(project):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_combined_plans_are_listed_and_combining_is_guarded(project):
+    app = App(project)
+    assert app.composites() == []
+    c = project / "runs" / "composites" / "square"
+    for sub in ("images", "labels", "rhino"):
+        (c / sub).mkdir(parents=True)
+    (c / "images" / "plan_tracks.png").write_bytes(b"x")
+    (c / "images" / "plan_tracks_layer.png").write_bytes(b"x")
+    (c / "labels" / "title.txt").write_text("Square\nall clips\n", encoding="utf-8")
+    (c / "rhino" / "composite.3dm").write_bytes(b"x")
+    assert app.composites() == [{"name": "square", "images": 2}]
+    d = app.composite_detail("square")
+    assert d["title"][0] == "Square" and len(d["images"]) == 1 and len(d["layers"]) == 1
+    assert len(d["rhino"]) == 1
+    with pytest.raises(ValueError):
+        app.composite_detail("../square")
+    with pytest.raises(ValueError):                       # a name that would leave the folder
+        app.start_job({"kind": "composite", "configs": ["sites/plaza9.yaml"],
+                       "options": {"name": "../evil"}})
+    with pytest.raises(ValueError):                       # only known site configs
+        app.start_job({"kind": "composite", "configs": ["../other.yaml"],
+                       "options": {"name": "ok"}})
