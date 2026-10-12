@@ -34,8 +34,10 @@ from .field import smooth_field
 from .geo import GeoRaster
 from .homography import Homography
 from .layout import open_run
-from .package import (_over, _save, coverage_rgb, density_rgb, flow_layer, legend_png,
+from .package import (_over, _save, coverage_rgb, density_rgb, flow_layer, group_key_png,
+                      legend_png,
                       north_arrow_png, scale_bar_png)
+from .colors import group_rgb
 from .trajectories import max_range_for
 
 GRID_M = 1.0                 # composite grid cell (coverage, density)
@@ -183,6 +185,37 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
     return cells, pr
 
 
+MASTER_ORDER = ("people", "cycles", "buses", "vehicles")    # drawn bottom -> top
+
+
+def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.DataFrame:
+    """Every group's flow on one grid: the pooled velocity of everything that moves (vx, vy,
+    speed, ... as in any vector field, weighted by how much each group was seen there), plus
+    per-group columns <group>_vx, _vy, _speed, _density, _confidence, _weight and the
+    dominant_group (most observed) of each cell."""
+    p = pts[~pts["predicted"].astype(bool) & pts["group"].isin(groups)]
+    x, y = p["x"].to_numpy(), p["y"].to_numpy()
+    m = 3 * smooth_m
+    bounds = (int(np.floor((x.min() - m) / cell)), int(np.floor((x.max() + m) / cell)),
+              int(np.floor((y.min() - m) / cell)), int(np.floor((y.max() + m) / cell)))
+    out = smooth_field(p, cell, smooth_m, float(p["dt"].median()), bounds=bounds)
+    out = out.set_index(["i", "j"])
+    weights = []
+    for g in groups:
+        sel = p[p["group"] == g]
+        f = smooth_field(sel, cell, smooth_m, float(sel["dt"].median()), bounds=bounds)
+        cols = ["vx", "vy", "speed", "density", "confidence", "weight"]
+        out = out.join(f.set_index(["i", "j"])[cols].add_prefix(f"{g}_"), how="outer")
+        weights.append(f"{g}_weight")
+    out = out.reset_index()
+    out["cell_x"] = (out["i"] + 0.5) * cell
+    out["cell_y"] = (out["j"] + 0.5) * cell
+    w = out[weights].fillna(0.0).to_numpy()
+    out["dominant_group"] = np.where(w.max(axis=1) > 0,
+                                     np.array(groups, dtype=object)[w.argmax(axis=1)], "")
+    return out
+
+
 def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Path,
                     title: str, subtitle: str = "", credit: str = "", plan_height_px: int = 3000,
                     log=print) -> Path:
@@ -229,6 +262,23 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         fl = flow_layer(fld, ext, (W, H), fc, rg, line_px=1.5 * plan_height_px / 2000)
         _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
         _save(fl, images / f"plan_flowfield_{gname}_layer.png")
+
+    # ---- master field: every group on one grid; image = each group's lines in its colour
+    master_groups = []
+    if len(field_files) >= 2:
+        master_groups = sorted(field_files, key=lambda g: (MASTER_ORDER.index(g)
+                                                           if g in MASTER_ORDER else 9, g))
+        mf = master_field(pts, master_groups, fc, float(cfg["field"]["smooth_m"]))
+        mf.to_csv(data / "field_master.csv", index=False)
+        mf.to_csv(hou / "vector_field_master.csv", index=False)
+        layer = None
+        for gname in master_groups:
+            fl = flow_layer(pd.read_csv(field_files[gname]), ext, (W, H), fc, ranges[gname],
+                            line_px=1.5 * plan_height_px / 2000, colour=group_rgb(gname))
+            layer = fl if layer is None else pf.stack_rgba(layer, fl)
+        _save(_over(base, layer), images / "plan_flowfield_master.png")
+        _save(layer, images / "plan_flowfield_master_layer.png")
+        log(f"  master field: {', '.join(master_groups)} on one grid ({len(mf)} cells)")
 
     # ---- where views overlap: do the clips agree on the movement? (per group)
     found = [r for r in (overlap_agreement(clips, pts, cfg, ext, (W, H), images, g, log)
@@ -311,6 +361,9 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
                        density_rgb(u ** 0.5), v)
         legend_png(labels / f"legend_coverage_{v}.png", "SECONDS IN VIEW", "0", f"{smax:.0f} s",
                    coverage_rgb(u ** 0.5), v)
+        if master_groups:
+            group_key_png(labels / f"legend_flow_master_{v}.png", "FLOW  ·  ALL GROUPS",
+                          master_groups, v)
         scale_bar_png(labels / f"scale_bar_{v}.png", pf._nice(x1 - x0), W / (x1 - x0), v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
     (labels / "title.txt").write_text("\n".join(x for x in (title, subtitle, credit and
@@ -364,13 +417,16 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     write_houdini_script(hou / "houdini_import.py", hou / "points.csv", origin, cfg, z0=z0)
     if field_files:
         groups_field = dict(field_files)
-        if len(groups_field) > 1 or "all" not in groups_field:
-            groups_field["all"] = next(iter(field_files.values()))    # default field
+        groups_field["all"] = (hou / "vector_field_master.csv" if master_groups
+                               else next(iter(field_files.values())))   # default field
         write_houdini_field_script(hou / "houdini_field.py", groups_field, {},
                                    hou / "points.csv", origin, fc, cfg)
     rh = out_dir / "rhino"
     dur = float(allp.groupby("clip")["time_s"].agg(lambda s: s.max() - s.min()).max()) if len(allp) else 0.0
-    write_grasshopper_script(rh / "grasshopper_import.py", hou / "points.csv", field_files,
+    gh_fields = dict(field_files)
+    if master_groups:
+        gh_fields["all"] = hou / "vector_field_master.csv"           # the default field
+    write_grasshopper_script(rh / "grasshopper_import.py", hou / "points.csv", gh_fields,
                              origin, z0, cfg, fc, dur)
     try:
         cams = [(c.name, c.homography.camera_params["E"], c.homography.camera_params["N"],
@@ -385,6 +441,8 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
                     rings.append((name, [(x0 + (u + 0.5) * GRID_M, y0 + (v + 0.5) * GRID_M)
                                          for u, v in q]))
         fl = {k: pd.read_csv(f) for k, f in field_files.items()}
+        if master_groups:
+            fl["master"] = pd.read_csv(hou / "vector_field_master.csv")
         write_3dm(rh / f"{out_dir.name}.3dm", allp, fl, origin, z0, cfg, fc, cams, rings, title)
     except ImportError:
         log("rhino: rhino3dm not installed (pip install rhino3dm), .3dm skipped")

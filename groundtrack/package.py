@@ -62,9 +62,9 @@ def _save(img: np.ndarray, path: Path) -> Path:
 # --------------------------------------------------------------------------- layers
 def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
                min_confidence: float = 0.5, min_dominance: float = 0.6,
-               line_px: float = 1.6) -> np.ndarray:
+               line_px: float = 1.6, colour=None) -> np.ndarray:
     """Streamlines of the vector field on transparency (straight-alpha RGBA uint8), in the
-    shared speed colours.
+    shared speed colours (or all in one `colour`, RGB 0..255).
 
     Drawn only where the field is well supported (confidence) and coherent (dominance:
     most movement in one direction); where streams cross, lines would invent swirls."""
@@ -103,7 +103,9 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     density = float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0))
     minlength = float(np.clip(6.0 / max(span, 1e-6), 0.01, 0.12))
     if len(xs) > 1 and len(ys) > 1 and (~weak).sum() > 4:
-        ax.streamplot(xs, ys, Um, Vm, color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi),
+        paint = (dict(color=tuple(c / 255 for c in colour)) if colour is not None else
+                 dict(color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi)))
+        ax.streamplot(xs, ys, Um, Vm, **paint,
                       linewidth=pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
                       density=density, arrowsize=0.9 * line_px, arrowstyle="-|>",
                       minlength=minlength)
@@ -157,6 +159,22 @@ def legend_png(path: Path, caption: str, lo_text: str, hi_text: str, gradient: n
     pf._text(d, (4, 86), lo_text, 28, "Light", ink)
     hw = d.textlength(hi_text, font=pf._font(28))
     pf._text(d, (4 + width - hw, 86), hi_text, 28, "Light", ink)
+    img.save(path)
+    return path
+
+
+def group_key_png(path: Path, caption: str, groups, variant: str) -> Path:
+    """A key of line swatches in the group colours (e.g. for the master flow field)."""
+    from .colors import group_rgb
+
+    ink, grey = INK_VARIANTS[variant]
+    img, d = _canvas(260 * max(len(groups), 1) + 8, 110)
+    pf._text(d, (4, 4), caption, 26, "SemiLight", grey, tracking=0.3)
+    x = 4
+    for g in groups:
+        d.line([(x, 78), (x + 70, 78)], fill=(*group_rgb(g), 255), width=6)
+        pf._text(d, (x + 84, 60), g, 28, "Light", ink)
+        x += 260
     img.save(path)
     return path
 

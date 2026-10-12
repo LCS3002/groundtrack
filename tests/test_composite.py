@@ -64,3 +64,28 @@ def test_composite_normalises_density_by_time_in_view(tmp_path):
     pairs = pd.read_csv(out / "data/overlap_pairs.csv")
     assert pairs["shared_cells"].iloc[0] > 0 and pairs["agree_share"].iloc[0] == 1.0
     assert (out / "images/plan_agreement_people_layer.png").exists()
+
+
+def test_master_field_puts_every_group_on_one_grid(tmp_path):
+    cfg = default_config()
+    a = _clip(tmp_path, "a", (ORIGIN[0], ORIGIN[1]), 0.0, 5)                # walkers, east
+    b = _clip(tmp_path, "b", (ORIGIN[0] + 2, ORIGIN[1]), 0.0, 5)
+    p = pd.read_csv(b.points)                                               # b: cars, west
+    p["group"], p["class"], p["vx"], p["speed"] = "vehicles", "car", -8.0, 8.0
+    p["x"] = ORIGIN[0] + 10 - 8.0 * p["time_s"] / 4
+    p["y"] = p["y"] + 12
+    p.to_csv(b.points, index=False)
+    clips = [load_clip("a", cfg, a.root), load_clip("b", cfg, b.root)]
+    out = build_composite(clips, None, tmp_path / "composite", "Two groups",
+                          plan_height_px=600, log=lambda *x: None)
+    m = pd.read_csv(out / "data/field_master.csv")
+    for c in ("vx", "vy", "people_vx", "vehicles_vx", "dominant_group"):
+        assert c in m
+    assert set(m["dominant_group"].dropna()) >= {"people", "vehicles"}
+    walk = m[m["dominant_group"] == "people"]
+    assert (walk["people_vx"].dropna() > 0).mean() > 0.9                  # walkers go east
+    cars = m[m["dominant_group"] == "vehicles"]
+    assert (cars["vehicles_vx"].dropna() < 0).mean() > 0.9                # cars go west
+    assert (out / "images/plan_flowfield_master_layer.png").exists()
+    assert (out / "labels/legend_flow_master_light.png").exists()
+    assert "vector_field_master.csv" in (out / "houdini/houdini_field.py").read_text()

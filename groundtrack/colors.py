@@ -24,9 +24,9 @@ def cmap():
     return LinearSegmentedColormap.from_list(RAMP_NAME, base(np.linspace(_LO, _HI, 256)))
 
 
-# box colour per group (overlay videos, in-situ stills): people blue, cyclists green, and
-# every other group (cars, buses, trucks, trains) red as a vehicle
-GROUP_RGB = {"people": (40, 130, 255), "cycles": (40, 190, 80)}
+# colour per group (overlay boxes, in-situ stills, the master flow field): people blue,
+# cyclists green, buses orange, every other group (cars, trucks, trains) red as a vehicle
+GROUP_RGB = {"people": (40, 130, 255), "cycles": (40, 190, 80), "buses": (245, 150, 30)}
 VEHICLE_RGB = (230, 45, 45)
 
 
