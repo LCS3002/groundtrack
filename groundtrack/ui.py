@@ -477,20 +477,38 @@ class App:
         return p
 
     def thumb(self, p: Path, w: int) -> bytes:
+        """A small preview, kept in memory and on disk (next to nothing of the project:
+        <temp>/groundtrack_thumbs), so a big plan decodes once, not on every visit."""
+        import hashlib
+        import tempfile
+
         from PIL import Image
 
-        key = (str(p), p.stat().st_mtime, w)
+        st = p.stat()
+        key = (str(p), st.st_mtime, w)
         if key not in self._thumbs:
-            im = Image.open(p)
-            im.thumbnail((w, w * 4))
-            buf = io.BytesIO()
-            if im.mode in ("RGBA", "LA", "P"):
-                im.save(buf, "PNG")
+            h = hashlib.sha1(f"{p.resolve()}|{st.st_mtime_ns}|{st.st_size}|{w}".encode())
+            disk = Path(tempfile.gettempdir()) / "groundtrack_thumbs" / f"{h.hexdigest()}.bin"
+            if disk.exists():
+                data = disk.read_bytes()
             else:
-                im.convert("RGB").save(buf, "JPEG", quality=85)
+                im = Image.open(p)
+                im.draft("RGB", (w, w * 4))          # JPEG: decode at a reduced size
+                im.thumbnail((w, w * 4), Image.Resampling.BILINEAR, reducing_gap=2.0)
+                buf = io.BytesIO()
+                if im.mode in ("RGBA", "LA", "P"):
+                    im.save(buf, "PNG")
+                else:
+                    im.convert("RGB").save(buf, "JPEG", quality=85)
+                data = buf.getvalue()
+                try:
+                    disk.parent.mkdir(parents=True, exist_ok=True)
+                    disk.write_bytes(data)
+                except OSError:
+                    pass
             if len(self._thumbs) > 400:
                 self._thumbs.clear()
-            self._thumbs[key] = buf.getvalue()
+            self._thumbs[key] = data
         return self._thumbs[key]
 
 
