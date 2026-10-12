@@ -118,3 +118,12 @@ def test_clip_fields_keep_each_clips_own_flow():
     shared = a.index[a["confidence"] > 0.5].intersection(b.index[b["confidence"] > 0.5])
     assert len(shared)
     assert pooled.loc[shared, "speed"].median() < 0.5 * 1.3   # pooled, the moments cancel out
+    # one continuous field: every cell either clip saw, each with the stronger clip's velocity
+    from groundtrack.composite import continuous_field
+
+    cont = continuous_field(pts, "people", 1.0, 2.0).set_index(["i", "j"])
+    assert set(cont.index) == set(a.index) | set(b.index)
+    stronger = np.where(a["weight"].reindex(cont.index).fillna(0)
+                        >= b["weight"].reindex(cont.index).fillna(0), 1, -1)
+    ok = cont["confidence"] > 0.5
+    assert (np.sign(cont.loc[ok, "vx"]) == stronger[ok.to_numpy()]).all()

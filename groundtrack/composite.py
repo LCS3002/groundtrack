@@ -187,7 +187,8 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
 
 MASTER_ORDER = ("people", "cycles", "buses", "vehicles")    # drawn bottom -> top
 # streamlines on a site plan: clear lines, not a hatch (spacing, length in metres)
-SITE_LINES = dict(min_confidence=0.4, min_dominance=0.5, spacing_m=3.0, bold=1.0, arrow=0.35)
+SITE_LINES = dict(min_confidence=0.25, min_dominance=0.35, spacing_m=1.6, bold=0.35,
+                  arrow=0.6)          # thin, dense, continuous: like a single clip's field
 
 
 def clip_fields(pts: pd.DataFrame, group: str, cell: float, smooth_m: float,
@@ -204,6 +205,21 @@ def clip_fields(pts: pd.DataFrame, group: str, cell: float, smooth_m: float,
               int(np.floor((g["y"].min() - m) / cell)), int(np.floor((g["y"].max() + m) / cell)))
     return [smooth_field(c, cell, smooth_m, float(c["dt"].median()), bounds=bounds)
             for _, c in g.groupby("clip") if c["track_id"].nunique() >= min_tracks]
+
+
+def continuous_field(pts: pd.DataFrame, group: str, cell: float,
+                     smooth_m: float) -> pd.DataFrame:
+    """One continuous field of a group from all clips: every cell takes the velocity of the
+    clip that saw it most (clip_fields). Coherent everywhere (each value is one moment's flow)
+    and covering everything any clip registered; streamlines run across the whole site."""
+    fields = [f.set_index(["i", "j"]) for f in clip_fields(pts, group, cell, smooth_m)]
+    if not fields:
+        return pd.DataFrame()
+    w = pd.concat([f["weight"].rename(k) for k, f in enumerate(fields)], axis=1).fillna(0.0)
+    win = w.to_numpy().argmax(axis=1)
+    out = pd.concat([f.loc[f.index.intersection(w.index[win == k])]
+                     for k, f in enumerate(fields)]).reset_index()
+    return out.sort_values(["j", "i"]).reset_index(drop=True)
 
 
 def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.DataFrame:
@@ -271,7 +287,7 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     fc = float(cfg["field"]["cell_size_m"])
     field_files, mosaic = {}, {}
     span = max(ext[1] - ext[0], ext[3] - ext[2])
-    min_len = float(np.clip(span * 0.03, 4.0, 6.0))
+    min_len = float(np.clip(span * 0.015, 3.0, 6.0))
     for gname, rg in ranges.items():
         g = pts[pts["group"] == gname]
         if g["track_id"].nunique() < 5:
@@ -280,9 +296,10 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         fld.to_csv(data / f"field_grid_{gname}.csv", index=False)
         field_files[gname] = hou / f"vector_field_{gname}.csv"     # for Houdini / Grasshopper
         fld.to_csv(field_files[gname], index=False)
-        # the image: every clip's own field (see clip_fields), in the speed colours
-        mosaic[gname] = clip_fields(pts, gname, fc, float(cfg["field"]["smooth_m"]))
-        fl = flow_layer([(f, None) for f in mosaic[gname]], ext, (W, H), fc, rg,
+        # the image: the continuous field from all clips (continuous_field), speed colours
+        mosaic[gname] = continuous_field(pts, gname, fc, float(cfg["field"]["smooth_m"]))
+        mosaic[gname].to_csv(hou / f"vector_field_{gname}_continuous.csv", index=False)
+        fl = flow_layer(mosaic[gname], ext, (W, H), fc, rg,
                         line_px=1.5 * plan_height_px / 2000, min_len_m=min_len, **SITE_LINES)
         _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
         _save(fl, images / f"plan_flowfield_{gname}_layer.png")
@@ -295,11 +312,12 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         mf = master_field(pts, master_groups, fc, float(cfg["field"]["smooth_m"]))
         mf.to_csv(data / "field_master.csv", index=False)
         mf.to_csv(hou / "vector_field_master.csv", index=False)
-        # the image: every clip's own field of every group (clip_fields), in the group colours,
-        # so it shows all the registered movement
-        layer = flow_layer([(f, group_rgb(gname)) for gname in master_groups
-                            for f in mosaic.get(gname, [])], ext, (W, H), fc, (0.0, 1.0),
-                           line_px=1.5 * plan_height_px / 2000, min_len_m=min_len, **SITE_LINES)
+        # the image: each group's continuous field (continuous_field) in its colour, so it
+        # shows all the registered movement as one flow per group
+        layer = flow_layer([(mosaic[gname], group_rgb(gname)) for gname in master_groups
+                            if gname in mosaic and not mosaic[gname].empty], ext, (W, H), fc,
+                           (0.0, 1.0), line_px=1.5 * plan_height_px / 2000, min_len_m=min_len,
+                           **SITE_LINES)
         _save(_over(base, layer), images / "plan_flowfield_master.png")
         _save(layer, images / "plan_flowfield_master_layer.png")
         # and the pooled field of everything that moves (one consistent field, as in the data),
@@ -455,11 +473,15 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         groups_field = dict(field_files)
         groups_field["all"] = (hou / "vector_field_master.csv" if master_groups
                                else next(iter(field_files.values())))   # default field
+        for gname in field_files:                     # the continuous fields (as drawn)
+            groups_field[f"{gname}_continuous"] = hou / f"vector_field_{gname}_continuous.csv"
         write_houdini_field_script(hou / "houdini_field.py", groups_field, {},
                                    hou / "points.csv", origin, fc, cfg)
     rh = out_dir / "rhino"
     dur = float(allp.groupby("clip")["time_s"].agg(lambda s: s.max() - s.min()).max()) if len(allp) else 0.0
     gh_fields = dict(field_files)
+    for gname in field_files:
+        gh_fields[f"{gname}_continuous"] = hou / f"vector_field_{gname}_continuous.csv"
     if master_groups:
         gh_fields["all"] = hou / "vector_field_master.csv"           # the default field
     write_grasshopper_script(rh / "grasshopper_import.py", hou / "points.csv", gh_fields,
