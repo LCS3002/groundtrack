@@ -240,9 +240,11 @@ def _segments_from(paths, lo, hi, max_gap):
 
 
 def plan_extent(points: pd.DataFrame, margin_frac: float = 0.12, aspect=(0.62, 1.5)):
-    """Plan extent (x0, x1, y0, y1) around the data, with a calm aspect ratio."""
-    x0, x1 = points["x"].min(), points["x"].max()
-    y0, y1 = points["y"].min(), points["y"].max()
+    """Plan extent (x0, x1, y0, y1) around the data, with a calm aspect ratio. With enough
+    samples the outermost 0.2 % are ignored: one stray track does not stretch the plan."""
+    q = (0.002, 0.998) if len(points) >= 2000 else (0.0, 1.0)
+    x0, x1 = points["x"].quantile(q).to_numpy()
+    y0, y1 = points["y"].quantile(q).to_numpy()
     span = max(x1 - x0, y1 - y0)
     m = span * margin_frac
     x0, x1, y0, y1 = x0 - m, x1 + m, y0 - m, y1 + m

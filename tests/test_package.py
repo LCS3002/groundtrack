@@ -89,3 +89,11 @@ def test_flowfield_video_with_two_fields(mixed_run, tmp_path):
     render_flowfield_video(fields, pts, None, cfg, out, plan_extent(pts), 1.0, None,
                            seconds=1.0, fps=10, width=320, log=lambda *_: None, clean_path=clean)
     assert out.stat().st_size > 1000 and clean.stat().st_size > 1000
+
+
+def test_plan_extent_ignores_one_stray_track():
+    rng = np.random.default_rng(1)
+    pts = pd.DataFrame({"x": rng.uniform(0, 100, 20000), "y": rng.uniform(0, 100, 20000)})
+    stray = pd.DataFrame({"x": np.linspace(400, 420, 30), "y": np.full(30, 50.0)})
+    x0, x1, _, _ = plan_extent(pd.concat([pts, stray], ignore_index=True))
+    assert x1 < 150
