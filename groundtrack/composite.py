@@ -92,6 +92,90 @@ def footprint(clip: ClipRun, grid) -> np.ndarray:
     return m & (np.hypot(ii + 0.5 - cx, jj + 0.5 - cy) * GRID_M <= rng)
 
 
+AGREE_DEG = 30.0             # flows within this angle count as agreeing
+
+
+def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext, size,
+                      images: Path, data: Path, log=print) -> dict:
+    """Compare the clips' own people flow fields where their views overlap.
+
+    Each clip gets its field on one shared grid; a cell counts where two or more clips have
+    a well-supported, clearly directional flow there (confidence >= 0.5, dominance >= 0.6).
+    Writes overlap_cells.csv (per cell: clips, combined vector, direction spread), and
+    overlap_pairs.csv (per pair of clips: shared cells, median angle and speed ratio) - a pair
+    that disagrees everywhere it overlaps points at a calibration, though different moments
+    can also move differently. plan_agreement_layer.png colours the cells."""
+    cell = float(cfg["field"]["cell_size_m"])
+    sm = float(cfg["field"]["smooth_m"])
+    people = pts[(pts["group"] == "people") & ~pts["predicted"].astype(bool)]
+    if people.empty:
+        return {}
+    x, y = people["x"].to_numpy(), people["y"].to_numpy()
+    bounds = (int(np.floor((x.min() - 3 * sm) / cell)), int(np.floor((x.max() + 3 * sm) / cell)),
+              int(np.floor((y.min() - 3 * sm) / cell)), int(np.floor((y.max() + 3 * sm) / cell)))
+    per = {}
+    for c in clips:
+        p = people[people["clip"] == c.name]
+        if p["track_id"].nunique() < 3:
+            continue
+        f = smooth_field(p, cell, sm, float(p["dt"].median()), bounds=bounds)
+        f = f[(f["confidence"] >= 0.5) & (f["dominance"] >= 0.6)]
+        per[c.name] = f.set_index(["i", "j"])[["vx", "vy", "speed", "weight"]]
+    if len(per) < 2:
+        return {}
+    allf = pd.concat(per, names=["clip"]).reset_index()
+    rows, pairs = [], {}
+    for (i, j), g in allf.groupby(["i", "j"]):
+        if len(g) < 2:
+            continue
+        w = g["weight"].to_numpy()
+        vx, vy = (g["vx"] * w).sum() / w.sum(), (g["vy"] * w).sum() / w.sum()
+        ang = np.degrees(np.arctan2(g["vx"].to_numpy(), g["vy"].to_numpy()))
+        mean_ang = np.degrees(np.arctan2(vx, vy))
+        spread = float(np.max(np.abs((ang - mean_ang + 180) % 360 - 180)))
+        rows.append({"x": (i + 0.5) * cell, "y": (j + 0.5) * cell, "clips": len(g),
+                     "clip_names": " ".join(g["clip"]), "vx": round(vx, 3), "vy": round(vy, 3),
+                     "speed": round(float(np.hypot(vx, vy)), 3),
+                     "direction_spread_deg": round(spread, 1)})
+        recs = g.to_dict("records")
+        for a in range(len(recs)):
+            for b in range(a + 1, len(recs)):
+                ra, rb = recs[a], recs[b]
+                d = abs((np.degrees(np.arctan2(ra["vx"], ra["vy"]) - np.arctan2(rb["vx"], rb["vy"]))
+                         + 180) % 360 - 180)
+                key = tuple(sorted((ra["clip"], rb["clip"])))
+                pairs.setdefault(key, []).append((d, ra["speed"] / max(rb["speed"], 1e-6)
+                                                  if key[0] == ra["clip"] else
+                                                  rb["speed"] / max(ra["speed"], 1e-6)))
+    if not rows:
+        log("  overlap: no cell where two clips both show a clear flow")
+        return {}
+    cells = pd.DataFrame(rows)
+    cells.to_csv(data / "overlap_cells.csv", index=False)
+    pr = pd.DataFrame([{"clip_a": a, "clip_b": b, "shared_cells": len(v),
+                        "median_angle_deg": round(float(np.median([d for d, _ in v])), 1),
+                        "agree_share": round(float(np.mean([d <= AGREE_DEG for d, _ in v])), 2),
+                        "median_speed_ratio": round(float(np.median([s for _, s in v])), 2)}
+                       for (a, b), v in pairs.items()]).sort_values("shared_cells", ascending=False)
+    pr.to_csv(data / "overlap_pairs.csv", index=False)
+    # agreement layer: cyan = agree, amber = 30-90 deg apart, red = opposite
+    W, H = size
+    x0, x1, y0, y1 = ext
+    layer = np.zeros((H, W, 4), np.uint8)
+    half = max(1, int(round(cell / (x1 - x0) * W / 2)))
+    for r in cells.itertuples():
+        col = ((38, 182, 218) if r.direction_spread_deg <= AGREE_DEG else
+               (240, 180, 60) if r.direction_spread_deg <= 90 else (230, 70, 60))
+        cx = int((r.x - x0) / (x1 - x0) * W)
+        cy = int((y1 - r.y) / (y1 - y0) * H)
+        layer[max(0, cy - half):cy + half, max(0, cx - half):cx + half] = (*col, 200)
+    _save(layer, images / "plan_agreement_layer.png")
+    share = float((cells["direction_spread_deg"] <= AGREE_DEG).mean())
+    log(f"  overlap: {len(cells)} cells seen by 2+ clips with a clear flow; "
+        f"{share:.0%} agree within {AGREE_DEG:.0f} deg")
+    return {"cells": len(cells), "agree_share": round(share, 2)}
+
+
 def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Path,
                     title: str, subtitle: str = "", credit: str = "", plan_height_px: int = 3000,
                     log=print) -> Path:
@@ -135,6 +219,10 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         fl = flow_layer(fld, ext, (W, H), fc, rg, line_px=1.5 * plan_height_px / 2000)
         _save(base + fl, images / f"plan_flowfield_{gname}.png")
         _save(_additive_to_rgba(fl), images / f"plan_flowfield_{gname}_layer.png")
+
+    # ---- where views overlap: do the clips agree on the movement?
+    if "people" in ranges:
+        overlap_agreement(clips, pts, cfg, ext, (W, H), images, data, log)
 
     # ---- coverage (seconds in view) and density per observed second, on a 1 m grid
     x0, x1, y0, y1 = ext

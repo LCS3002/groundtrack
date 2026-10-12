@@ -552,6 +552,14 @@ not twice as busy and a spot nobody filmed stays blank. The clips are usually fi
 another, not at once: the composite shows typical movement over the time they cover. Rough
 calibrations (`method_info.grade` in the calibration file) are included unless `--only-ok`.
 
+**Overlapping views.** Where two or more clips see the same ground, their vectors are pooled
+into the composite field (weighted by how much each saw), and also compared: each clip gets its
+own field on one shared grid, and wherever 2+ clips show a clear dominant flow in a cell, the
+directions are compared (`data/overlap_cells.csv`, `images/plan_agreement_layer.png`: cyan
+within 30°, amber 30-90°, red opposite). `data/overlap_pairs.csv` sums it up per pair of clips:
+a pair that disagrees everywhere it overlaps usually points at one calibration (though two
+moments of a busy square can genuinely move differently).
+
 ## 6. Houdini import
 
 1. Create a *Geometry* node. Inside it, add a **Python** SOP (*Python Script*).

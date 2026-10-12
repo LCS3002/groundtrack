@@ -59,3 +59,7 @@ def test_composite_normalises_density_by_time_in_view(tmp_path):
     pick = lambda g: g[(abs(g["y"] - lane) < 0.6) & (abs(g["x"] - ORIGIN[0]) < 6)]  # noqa: E731
     d2, d1 = pick(grid)["people_per_m2"].median(), pick(g1)["people_per_m2"].median()
     assert d1 > 0 and abs(d2 / d1 - 1) < 0.2
+    # both clips see the same eastward walkers: where they overlap, they agree
+    pairs = pd.read_csv(out / "data/overlap_pairs.csv")
+    assert pairs["shared_cells"].iloc[0] > 0 and pairs["agree_share"].iloc[0] == 1.0
+    assert (out / "images/plan_agreement_layer.png").exists()
