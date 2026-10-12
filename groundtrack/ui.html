@@ -6,8 +6,9 @@
 <title>groundtrack</title>
 <style>
 :root {
-  --bg: #0b0b0c; --panel: #111113; --ink: #ecece8; --grey: #8a8a8e; --dim: #5c5c60;
-  --hair: #2a2a2e; --accent: #26b6da; --warn: #ffa840; --bad: #ff6b5e; --ok: #7fd8b0;
+  --bg: #f7f6f2; --panel: #ffffff; --ink: #1d1d1f; --grey: #6c6c72; --dim: #9a9aa0;
+  --hair: #dcdcd6; --edge: #b8b8b4; --accent: #1f78d1; --warn: #d98a1c; --bad: #d23c30;
+  --ok: #2e9e5b;
   --font: "Bahnschrift", "DIN Alternate", "DIN Next", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
 }
@@ -52,12 +53,12 @@ section > .head .num { color: var(--dim); font-size: 11px; letter-spacing: .3em;
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: 7px 18px; font-size: 14px; }
 .kv .k { color: var(--grey); }
 .path { font-family: var(--mono); font-size: 12px; color: var(--grey); word-break: break-all; }
-button, .btn { background: transparent; color: var(--ink); border: 1px solid #47474c; padding: 9px 16px;
+button, .btn { background: var(--panel); color: var(--ink); border: 1px solid var(--edge); padding: 9px 16px;
   font-family: var(--font); font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
   cursor: pointer; font-weight: 400; text-decoration: none; display: inline-block; }
-button:hover, .btn:hover { border-color: var(--accent); color: #fff; }
+button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
 button.primary { border-color: var(--accent); color: var(--accent); }
-button.primary:hover { background: var(--accent); color: var(--bg); }
+button.primary:hover { background: var(--accent); color: #fff; }
 button:disabled { opacity: .35; cursor: default; }
 input, select { background: var(--panel); color: var(--ink); border: 1px solid var(--hair);
   padding: 9px 11px; font-family: var(--font); font-size: 14px; font-weight: 300; outline: none; }
@@ -66,20 +67,20 @@ input[type=checkbox] { accent-color: var(--accent); }
 label.l { display: block; }
 label.l .cap { display: block; margin-bottom: 6px; }
 .hint { color: var(--dim); font-size: 12px; margin-top: 8px; line-height: 1.5; }
-.note { font-size: 13px; padding: 10px 14px; border-left: 2px solid var(--warn); background: #17130c;
-  color: #e9d6bb; margin: 12px 0; }
-.note.ok { border-color: var(--ok); background: #0d1612; color: #c7eadb; }
+.note { font-size: 13px; padding: 10px 14px; border-left: 3px solid var(--warn); background: #fdf3e2;
+  color: #6b4a12; margin: 12px 0; }
+.note.ok { border-color: var(--ok); background: #e9f5ed; color: #1f5a35; }
 .hits div { padding: 8px 12px; border: 1px solid var(--hair); margin-top: -1px; cursor: pointer; font-size: 13px; }
 .hits div:hover, .hits div.sel { border-color: var(--accent); }
 .hits .c { color: var(--dim); font-size: 12px; }
-pre.log { background: #070708; border: 1px solid var(--hair); font-family: var(--mono); font-size: 12px;
-  color: #b9b9bd; padding: 14px 16px; height: 300px; overflow: auto; margin: 14px 0 0; white-space: pre-wrap; }
+pre.log { background: var(--panel); border: 1px solid var(--hair); font-family: var(--mono); font-size: 12px;
+  color: #3a3a3e; padding: 14px 16px; height: 300px; overflow: auto; margin: 14px 0 0; white-space: pre-wrap; }
 .progress { font-family: var(--mono); font-size: 12px; color: var(--accent); min-height: 18px; margin-top: 8px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
 .tile { cursor: pointer; }
-.tile .img { background: #050506 center/contain no-repeat; aspect-ratio: 4 / 3; border: 1px solid var(--hair); }
-.tile.label .img { background-color: #3a3a3e; }
+.tile .img { background: #ecebe6 center/contain no-repeat; aspect-ratio: 4 / 3; border: 1px solid var(--hair); }
+.tile.label .img { background-color: #9a9a9e; }
 .tile .t { font-size: 12px; color: var(--grey); margin-top: 7px; letter-spacing: .05em;
   display: flex; justify-content: space-between; }
 .tile .t a { color: var(--dim); text-decoration: none; }
@@ -93,12 +94,15 @@ video { width: 100%; background: #000; border: 1px solid var(--hair); }
 .files a { display: inline-block; margin: 0 14px 8px 0; font-size: 13px; color: var(--grey); text-decoration: none;
   border-bottom: 1px solid var(--hair); }
 .files a:hover { color: var(--accent); }
-.lightbox { position: fixed; inset: 0; background: rgba(5,5,6,.94); display: none; align-items: center;
+.lightbox { position: fixed; inset: 0; background: rgba(247,246,242,.97); display: none; align-items: center;
   justify-content: center; z-index: 20; cursor: zoom-out; }
 .lightbox img { max-width: 94vw; max-height: 90vh; }
 .lightbox .t { position: absolute; bottom: 22px; left: 0; right: 0; text-align: center; color: var(--grey); font-size: 12px; letter-spacing: .1em; }
 dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--hair); padding: 30px 34px; width: min(560px, 92vw); }
-dialog::backdrop { background: rgba(0,0,0,.7); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.picks { max-height: 300px; overflow: auto; border: 1px solid var(--hair); padding: 8px 12px; margin-top: 8px;
+  columns: 2; font-size: 13px; }
+.picks label { display: block; padding: 3px 0; break-inside: avoid; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .empty { color: var(--dim); padding: 60px 0; font-size: 15px; }
 .err { color: var(--bad); font-size: 13px; margin-top: 10px; }
@@ -116,6 +120,9 @@ dialog::backdrop { background: rgba(0,0,0,.7); }
 </header>
 <div class="layout">
   <aside>
+    <span class="cap">Combined plans</span>
+    <div id="composites"></div>
+    <div style="padding: 14px 28px 26px"><button onclick="openCombine()">+ Combine clips</button></div>
     <span class="cap">Sites</span>
     <div id="sites"></div>
     <div style="padding: 18px 28px"><button onclick="newSiteDlg.showModal()">+ New site</button></div>
@@ -138,6 +145,23 @@ dialog::backdrop { background: rgba(0,0,0,.7); }
   <div style="margin-top: 22px; display: flex; gap: 10px">
     <button class="primary" onclick="createSite()">Create</button>
     <button onclick="newSiteDlg.close()">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="combineDlg">
+  <div class="cap" style="margin-bottom: 20px">Combine clips of one place</div>
+  <div class="grid2">
+    <label class="l"><span class="cap">Name (folder)</span><input id="cbName" placeholder="trafalgar_all"></label>
+    <label class="l"><span class="cap">Title</span><input id="cbTitle" placeholder="Trafalgar Square"></label>
+  </div>
+  <div class="cap" style="margin-top: 18px">Clips (their latest processed run)</div>
+  <div class="picks" id="cbPicks"></div>
+  <label style="display: block; margin-top: 12px; font-size: 13px; color: var(--grey)"><input type="checkbox" id="cbOk"> only calibrations graded ok</label>
+  <div class="hint">One plan: all tracks, a flow field per group and a master field of all groups, density per second in view, each clip's view, and where overlapping clips agree. Also Houdini, Rhino and Grasshopper files.</div>
+  <div class="err" id="cbErr"></div>
+  <div style="margin-top: 22px; display: flex; gap: 10px">
+    <button class="primary" onclick="startCombine()">Combine</button>
+    <button onclick="combineDlg.close()">Cancel</button>
   </div>
 </dialog>
 
@@ -193,9 +217,10 @@ async function loadSites() {
 }
 
 async function openSite(config, keepRun) {
-  state.current = config;
+  state.current = config; state.composite = null;
+  [...document.querySelectorAll("#composites .site")].forEach(el => el.classList.remove("active"));
   if (!keepRun) state.run = null;
-  [...document.querySelectorAll(".site")].forEach((el, i) => el.classList.toggle("active", state.sites[i]?.config === config));
+  [...document.querySelectorAll("#sites .site")].forEach((el, i) => el.classList.toggle("active", state.sites[i]?.config === config));
   try { state.site = await api("/api/site?config=" + encodeURIComponent(config)); }
   catch (e) { $("#main").replaceChildren(h("div", { class: "err" }, e.message)); return; }
   if (!state.run && state.site.runs.length) state.run = state.site.runs.find(r => r.processed)?.name || state.site.runs[0].name;
@@ -339,6 +364,9 @@ async function renderRuns(box) {
     h("button", { onclick: () => startJob("process", {}, state.run) }, "Re-process"),
     h("button", { onclick: () => startJob("package", {}, state.run) }, "Redraw images + plate"),
     h("button", { onclick: () => startJob("debug-video", {}, state.run) }, "Overlay video"),
+    h("button", { onclick: () => startJob("rhino", {}, state.run) }, "Rhino + Grasshopper"),
+    h("button", { title: "for a handheld clip whose camera moved: measures the camera motion, then Re-process",
+      onclick: () => startJob("stabilize", {}, state.run) }, "Stabilise camera motion"),
     h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder")));
   if (d.metrics) {
     const want = ["tracks", "median_speed", "median_speed_kmh", "median_straightness", "duration", "calibration_rmse", "implied_person_height"];
@@ -358,7 +386,59 @@ async function renderRuns(box) {
       h("div", { class: "tile" }, h("div", { class: "t" }, h("span", {}, base(p) + (p.endsWith("_clean.mp4") ? "  ·  no labels" : "")), h("a", { href: fileUrl(p) + "&download=1" }, "↓"))))))] : []);
   group("data/  —  metrics, tracks, statistics (QGIS, spreadsheets)", d.data.length ? [links(d.data)] : []);
   group("houdini/  —  scripts + the CSVs they read", d.houdini.length ? [links(d.houdini)] : []);
+  group("rhino/  —  Rhino 8 .3dm + Grasshopper script (paste into a Python 3 Script component)", d.rhino?.length ? [links(d.rhino)] : []);
   group("extras/  —  maps with legends", d.extras.length ? [h("div", { class: "gallery" }, d.extras.map(p => tile(p, name(p))))] : []);
+}
+
+// ------------------------------------------------------------------ combined plans
+async function loadComposites() {
+  const j = await api("/api/composites");
+  const box = $("#composites"); box.innerHTML = "";
+  if (!j.composites.length) box.append(h("div", { class: "site" }, h("div", { class: "s" }, "none yet")));
+  for (const c of j.composites)
+    box.append(h("div", { class: "site" + (state.composite === c.name ? " active" : ""), onclick: () => openComposite(c.name) },
+      h("div", {}, h("div", { class: "n" }, c.name), h("div", { class: "s" }, `${c.images} images`))));
+}
+function openCombine() {
+  const box = $("#cbPicks"); box.innerHTML = "";
+  for (const s of state.sites.filter(s => s.calibrated && s.runs))
+    box.append(h("label", {}, h("input", { type: "checkbox", value: s.config }), " ", s.name));
+  $("#cbErr").textContent = ""; combineDlg.showModal();
+}
+async function startCombine() {
+  const configs = [...document.querySelectorAll("#cbPicks input:checked")].map(i => i.value);
+  try {
+    const j = await api("/api/job", { kind: "composite", configs,
+      options: { name: $("#cbName").value, title: $("#cbTitle").value, only_ok: $("#cbOk").checked } });
+    combineDlg.close();
+    state.jobs[j.id] = j; state.watch = j.id; state.since = 0; state.logLines = [];
+    state.composite = $("#cbName").value; state.current = null; renderJobs();
+    $("#main").replaceChildren(h("h1", {}, state.composite), h("div", { class: "sub" }, "combining …"), h("div", { id: "jobView" }));
+    renderJobView();
+  } catch (e) { $("#cbErr").textContent = e.message; }
+}
+async function openComposite(name) {
+  state.composite = name; state.current = null;
+  [...document.querySelectorAll("#sites .site")].forEach(el => el.classList.remove("active"));
+  loadComposites();
+  let d;
+  try { d = await api("/api/composite?name=" + encodeURIComponent(name)); }
+  catch (e) { $("#main").replaceChildren(h("div", { class: "err" }, e.message)); return; }
+  const m = $("#main"); m.innerHTML = "";
+  m.append(h("h1", {}, d.title[0] || name), h("div", { class: "sub" }, d.title.slice(1).join("  ·  ")),
+    h("div", { style: "display: flex; gap: 10px; margin-bottom: 26px" },
+      h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder")),
+    h("div", { id: "jobView" }));
+  renderJobView();
+  const name_ = p => base(p).replace(/\.png$/, "");
+  const links = list => h("div", { class: "files" }, list.map(p => h("a", { href: fileUrl(p) + "&download=1" }, base(p))));
+  const group = (title, kids) => { if (kids.length) m.append(h("div", { class: "cap", style: "margin: 30px 0 12px" }, title), ...kids); };
+  group("images/  —  frameless plans (all stack exactly)", d.images.length ? [h("div", { class: "gallery" }, d.images.map(p => tile(p, name_(p))))] : []);
+  group("images/  —  layers on transparency", d.layers.length ? [h("div", { class: "gallery" }, d.layers.map(p => tile(p, name_(p), "label")))] : []);
+  group("labels/", d.labels.length ? [h("div", { class: "gallery" }, d.labels.map(p => tile(p, name_(p), "label")))] : []);
+  group("data/  —  all points, master field, overlap check", d.data.length ? [links(d.data)] : []);
+  group("houdini/", d.houdini.length ? [links(d.houdini)] : []);
+  group("rhino/  —  .3dm + Grasshopper script", d.rhino.length ? [links(d.rhino)] : []);
 }
 
 // ------------------------------------------------------------------ jobs
@@ -409,8 +489,9 @@ async function poll() {
       const p = document.getElementById("jobProgress"); if (p) p.textContent = j.status === "running" ? j.last : "";
       const st = document.getElementById("jobStatus"); if (st) st.textContent = j.status;
       if (was === "running" && j.status !== "running") {
-        renderJobs(); await loadSites();
+        renderJobs(); await loadSites(); await loadComposites();
         if (state.current) await openSite(state.current, true);
+        else if (j.kind === "composite" && state.composite) await openComposite(state.composite);
       }
     } catch (e) { /* server restarting */ }
   }
@@ -425,7 +506,8 @@ async function createSite() {
   } catch (e) { $("#nsErr").textContent = e.message; }
 }
 
-loadSites().then(() => { if (state.sites.length) openSite(state.sites[0].config); });
+loadSites().then(() => { if (state.sites.length && !state.current && !state.composite) openSite(state.sites[0].config); });
+loadComposites();
 poll();
 </script>
 </body>

@@ -367,6 +367,25 @@ spot.
 Calibrate first, then track: tracking with `stabilize` aligns to the calibration frame. If you
 re-calibrate on a different frame, re-run `track`.
 
+**Handheld pans.** Once the clip is calibrated, the camera motion is modelled as a pure
+rotation with the calibrated focal length (H = K R K⁻¹, three parameters). Chained over a long
+pan this stays stable, where a free homography drifts into a perspective blow-up. Frames that no
+longer overlap the calibration view are carried by the frame-to-frame rotation, and the drift is
+corrected wherever the reference is seen again. On the Trafalgar portico clips the camera panned
+50-90°. Without this, every frame was projected as if it were the calibration frame, so most
+tracks were in the wrong place and people "walked" at 2.6 m/s. With it the median is 0.6 m/s.
+Positions far outside the clicked view are extrapolated from the calibration, so treat them as
+rough.
+
+`stabilize: auto` measures the motion first. A sampled frame that cannot be matched to the
+reference at all now counts as *moved* (a pan quickly leaves too little overlap), not as a
+static camera. For a run tracked without it, there is no need to detect again:
+
+```powershell
+groundtrack stabilize -c sites/clip.yaml --run v1     # camera motion from the saved run
+groundtrack process   -c sites/clip.yaml --run v1     # then rebuild the outputs
+```
+
 ---
 
 ## 4. Running both sites
@@ -374,7 +393,11 @@ re-calibrate on a different frame, re-run `track`.
 **Prefer buttons?** `groundtrack ui` opens a local page in your browser (served from this
 computer only, nothing is uploaded). Pick a site, look up where you stood, open the point picker,
 start a run and watch its log, then browse every result: frameless images, label PNGs, metrics,
-videos and data, each with a download link. Every button runs the same command as below.
+videos, data, Houdini and Rhino files, each with a download link. Per run there are buttons for
+re-processing, redrawing images, the overlay video, the Rhino / Grasshopper files and
+*Stabilise camera motion*. **Combine clips** (top of the sidebar) puts several clips of one place
+on one plan (§5, `composite`); the combined plans are listed and browsable there too. Every
+button runs the same command as below.
 
 ```powershell
 groundtrack ui                      # from the project folder (the one with sites/ and runs/)
@@ -801,6 +824,9 @@ RMS. Real footage will be worse; that's what this check is for.
   vehicle the detector sees is also written to `_working/privacy_boxes.csv`, and the blur uses
   both. Runs tracked before this existed: `groundtrack privacy -c <site>.yaml --run <run>`,
   then re-render the overlay video / package.
+* **Each blur box is held for 0.25 s** before and after its detection. The detector loses a
+  person for a frame or two now and then (1-6 % of person boxes in the test clips). Without the
+  hold, a face would flash unblurred in those frames. Overlapping boxes are blurred as one area.
 * **Number plates** are blurred too, in the overlay videos and the in-situ images: the lower part
   of every vehicle close enough for its plate to be readable (`debug_video: blur_plates`, on by
   default). Like the people blur, it relies on the detections: a vehicle the detector missed

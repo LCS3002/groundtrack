@@ -269,6 +269,7 @@ class App:
         d["extras"] = files(r.extras, IMG_EXT)
         d["data"] = files(r.data) + files(r.labels, {".txt"})
         d["houdini"] = files(r.houdini)
+        d["rhino"] = files(r.rhino)
         if r.metrics_csv.exists():
             import csv
 
@@ -290,9 +291,39 @@ class App:
             raise ValueError(f"no run {run!r}")
         return p
 
+    # ---- combined plans (groundtrack composite)
+    def composites(self) -> list[dict]:
+        root = self.root / "runs" / "composites"
+        return [{"name": q.name, "images": len(list((q / "images").glob("*.png")))}
+                for q in sorted(root.glob("*")) if (q / "images").is_dir()] \
+            if root.exists() else []
+
+    def composite_detail(self, name: str) -> dict:
+        if not NAME_RE.match(name or ""):
+            raise ValueError("bad name")
+        q = (self.root / "runs" / "composites" / name).resolve()
+        if not q.is_dir():
+            raise ValueError(f"no combined plan {name!r}")
+
+        def files(folder: Path, exts=None) -> list[str]:
+            return [str(f) for f in sorted(folder.glob("*")) if f.is_file()
+                    and (exts is None or f.suffix.lower() in exts)] if folder.exists() else []
+
+        imgs = files(q / "images", IMG_EXT)
+        title = (q / "labels" / "title.txt")
+        return {"name": name, "path": str(q),
+                "title": title.read_text(encoding="utf-8").splitlines() if title.exists() else [],
+                "images": [f for f in imgs if not f.endswith("_layer.png")],
+                "layers": [f for f in imgs if f.endswith("_layer.png")],
+                "labels": files(q / "labels", IMG_EXT),
+                "data": files(q / "data") + files(q / "labels", {".txt"}),
+                "houdini": files(q / "houdini"), "rhino": files(q / "rhino")}
+
     # ---- actions
     def start_job(self, body: dict) -> dict:
         kind = body.get("kind")
+        if kind == "composite":
+            return self._start_composite(body)
         f = self.resolve_config(body.get("config", "")) if kind != "device" else None
         rel = self.rel(f) if f else None
         cfg = _load(f) if f else None
@@ -308,7 +339,7 @@ class App:
                 args += ["--max-frames", str(int(opts["max_frames"]))]
             if opts.get("debug_video"):
                 args.append("--debug-video")
-        elif kind in ("process", "package", "debug-video"):
+        elif kind in ("process", "package", "debug-video", "stabilize", "rhino"):
             self._run_dir(cfg, run)
             args = [kind, "-c", rel, "--run", run]
             if kind == "process" and opts.get("debug_video"):
@@ -325,12 +356,30 @@ class App:
             args = ["device"]
         else:
             raise ValueError(f"unknown job {kind!r}")
-        heavy = {"run", "process", "debug-video", "autocalibrate"}
+        heavy = {"run", "process", "debug-video", "autocalibrate", "stabilize"}
         if kind in heavy and any(j.kind in heavy and j.status == "running"
                                  for j in self.jobs.values()):
             raise ValueError("another run is still going: wait for it or stop it first")
         label = f"{kind} · {cfg.site if cfg else ''}" + (f" · {run}" if run else "")
         job = Job(kind, args, self.root, label)
+        self.jobs[job.id] = job
+        return job.summary()
+
+    def _start_composite(self, body: dict) -> dict:
+        """Several clips of one place on one plan -> runs/composites/<name>."""
+        opts = body.get("options") or {}
+        name = str(opts.get("name") or "").strip()
+        if not NAME_RE.match(name):
+            raise ValueError("name: letters, numbers, - _ . only")
+        rels = [self.rel(self.resolve_config(c)) for c in body.get("configs") or []]
+        if not rels:
+            raise ValueError("pick at least one clip")
+        args = ["composite", *rels, "--out", f"runs/composites/{name}"]
+        if opts.get("title"):
+            args += ["--title", str(opts["title"])[:120]]
+        if opts.get("only_ok"):
+            args.append("--only-ok")
+        job = Job("composite", args, self.root, f"combine · {name} ({len(rels)} clips)")
         self.jobs[job.id] = job
         return job.summary()
 
@@ -504,6 +553,10 @@ def make_handler(app: App, port: int):
                     self._json(app.site(q["config"]))
                 elif u.path == "/api/run":
                     self._json(app.run_detail(q["config"], q["run"]))
+                elif u.path == "/api/composites":
+                    self._json({"composites": app.composites()})
+                elif u.path == "/api/composite":
+                    self._json(app.composite_detail(q["name"]))
                 elif u.path == "/api/job":
                     j = app.jobs[q["id"]]
                     since = int(q.get("since", 0))
