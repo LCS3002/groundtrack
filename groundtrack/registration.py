@@ -20,6 +20,7 @@ import numpy as np
 WORK_WIDTH = 960      # features are matched on a downscaled grey frame
 MIN_INLIERS = 40
 FUSE_S = 0.5          # time constant: below it trust frame-to-frame flow, above it the reference
+MAX_STEP_DEG = 4.0    # rotation model: a larger turn between two frames is a failed fit
 
 
 def _box_mask(shape, boxes, scale, pad=0.15):
@@ -168,6 +169,135 @@ class FrameRegistrar:
         return out
 
 
+def _bearings(pts: np.ndarray, Kinv: np.ndarray) -> np.ndarray:
+    p = np.column_stack([pts, np.ones(len(pts))]) @ Kinv.T
+    return p / np.linalg.norm(p, axis=1, keepdims=True)
+
+
+def _kabsch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation R with a ~ R b (unit vectors as rows)."""
+    U, _, Vt = np.linalg.svd(b.T @ a)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+
+def rotation_ransac(a: np.ndarray, b: np.ndarray, thr_rad: float, iters: int = 200,
+                    rng=None) -> tuple[np.ndarray | None, int]:
+    """Robust rotation between two sets of bearings (a ~ R b): 2-point RANSAC + refit."""
+    n = len(a)
+    if n < MIN_INLIERS:
+        return None, 0
+    rng = rng or np.random.default_rng(0)
+    best = None
+    for _ in range(iters):
+        i = rng.choice(n, 2, replace=False)
+        R = _kabsch(a[i], b[i])
+        inl = np.einsum("ij,ij->i", a, b @ R.T) > np.cos(thr_rad)
+        if best is None or inl.sum() > best.sum():
+            best = inl
+    if best.sum() < MIN_INLIERS:
+        return None, 0
+    R = _kabsch(a[best], b[best])
+    inl = np.einsum("ij,ij->i", a, b @ R.T) > np.cos(thr_rad)
+    if inl.sum() < MIN_INLIERS:
+        return None, 0
+    return _kabsch(a[inl], b[inl]), int(inl.sum())
+
+
+class RotationRegistrar(FrameRegistrar):
+    """For a camera turning on the spot (a handheld pan): the motion to the reference frame
+    as a pure rotation with the calibrated focal length, H = K R K^-1.
+
+    Three parameters instead of eight: chained over a long pan the estimate cannot blow up
+    in perspective, and frames that no longer overlap the reference are carried by the
+    frame-to-frame rotations (drift corrected wherever the reference is seen again)."""
+
+    def __init__(self, reference_bgr: np.ndarray, focal_px: float, n_features: int = 2000,
+                 abs_every: int = 5):
+        super().__init__(reference_bgr, n_features, abs_every)
+        self.K = np.array([[focal_px, 0, self.w / 2], [0, focal_px, self.h / 2], [0, 0, 1.0]])
+        self.Kinv = np.linalg.inv(self.K)
+        self.Ks_inv = np.linalg.inv(self._S @ self.K)       # working-resolution intrinsics
+        self.thr = 2.0 / (focal_px * self.scale)            # ~2 working px, in radians
+        self.rng = np.random.default_rng(0)
+        self.last = np.eye(3)
+
+    def _absolute(self, g, mask):
+        kp, des = self.orb.detectAndCompute(g, mask)
+        if des is None or len(kp) < MIN_INLIERS:
+            return None, 0
+        pairs = self.matcher.knnMatch(des, self.ref_des, k=2)
+        good = [pr[0] for pr in pairs if len(pr) == 2 and pr[0].distance < 0.8 * pr[1].distance]
+        if len(good) < MIN_INLIERS:
+            return None, 0
+        cur = _bearings(np.float32([kp[m.queryIdx].pt for m in good]), self.Ks_inv)
+        ref = _bearings(np.float32([self.ref_kp[m.trainIdx].pt for m in good]), self.Ks_inv)
+        return rotation_ransac(ref, cur, self.thr, rng=self.rng)        # ref <- cur
+
+    def _relative(self, g, mask):
+        if self.prev_gray is None:
+            return None
+        pts = cv2.goodFeaturesToTrack(self.prev_gray, 800, 0.01, 8, mask=self.prev_mask)
+        if pts is None or len(pts) < MIN_INLIERS:
+            return None
+        nxt, st, _ = cv2.calcOpticalFlowPyrLK(self.prev_gray, g, pts, None,
+                                              winSize=(21, 21), maxLevel=3)
+        ok = st.ravel() == 1
+        if ok.sum() < MIN_INLIERS:
+            return None
+        prev = _bearings(pts.reshape(-1, 2)[ok], self.Ks_inv)
+        cur = _bearings(nxt.reshape(-1, 2)[ok], self.Ks_inv)
+        R, _ = rotation_ransac(prev, cur, self.thr, rng=self.rng)       # prev <- cur
+        if R is not None and np.degrees(np.linalg.norm(cv2.Rodrigues(R)[0])) > MAX_STEP_DEG:
+            return None             # a hand cannot turn that fast between frames: a bad fit
+        return R
+
+    def register(self, frame_bgr: np.ndarray, boxes=None) -> tuple[np.ndarray, int]:
+        g = self._gray(frame_bgr)
+        mask = _box_mask(g.shape, boxes, self.scale)
+        R = self._relative(g, mask)
+        self.relative.append(R)
+        A, n_in = (self._absolute(g, mask) if self.k % self.abs_every == 0 else (None, 0))
+        self.k += 1
+        self.abs_ok.append(A is not None)
+        if A is None:
+            A = self.last @ R if R is not None else self.last
+        self.last = A
+        self.absolute.append(A)
+        self.inliers.append(n_in)
+        self.prev_gray, self.prev_mask = g, mask
+        return self.K @ A @ self.Kinv, n_in
+
+    def finalize(self, fps: float) -> list[np.ndarray]:
+        """Chained rotations, drift-corrected toward the reference matches (smoothly)."""
+        from scipy.ndimage import gaussian_filter1d
+
+        n = len(self.absolute)
+        if n == 0:
+            return []
+        chain = [self.absolute[0]]
+        for k in range(1, n):
+            R = self.relative[k]
+            if R is None:           # no usable flow: keep the previous step's motion
+                R = self.relative[k - 1] if k > 1 and self.relative[k - 1] is not None                     else np.eye(3)
+            chain.append(chain[-1] @ R)
+        ok = np.array(self.abs_ok, bool)
+        corr = np.zeros((n, 3))
+        for k in np.flatnonzero(ok):            # rotation taking the chain onto the match
+            corr[k] = cv2.Rodrigues(self.absolute[k] @ chain[k].T)[0].ravel()
+        if ok.any() and (~ok).any():
+            idx = np.arange(n)
+            for j in range(3):
+                corr[~ok, j] = np.interp(idx[~ok], idx[ok], corr[ok, j])
+        corr = gaussian_filter1d(corr, sigma=max(1.0, FUSE_S * fps), axis=0, mode="nearest")
+        out = []
+        for k in range(n):
+            R = cv2.Rodrigues(corr[k].reshape(3, 1))[0] @ chain[k]
+            H = self.K @ R @ self.Kinv
+            out.append(H / H[2, 2])
+        return out
+
+
 def save_registration(path: Path, frames, Hs, inliers, reference_frame: int) -> None:
     np.savez_compressed(path, frames=np.asarray(frames, np.int64), H=np.asarray(Hs, np.float64),
                         inliers=np.asarray(inliers, np.int32), reference_frame=reference_frame)
@@ -199,15 +329,62 @@ def drift_px(H: np.ndarray, w: int, h: int) -> float:
 
 def measure_camera_motion(video, reference_frame: int = 0, samples: int = 8) -> float:
     """Largest displacement (px) of the frame corners from the reference frame, sampled over
-    the clip: a quick check whether stabilisation is needed at all."""
+    the clip: a quick check whether stabilisation is needed at all.
+
+    A frame that cannot be matched to the reference at all counts as moved (inf): a handheld
+    pan quickly leaves too little overlap to match, which is not a static camera."""
     from .video import read_frame, video_info
 
     info = video_info(video)
     reg = FrameRegistrar(read_frame(video, reference_frame), abs_every=1)
     worst = 0.0
     for f in np.linspace(0, max(info.n_frames - 2, 0), samples).astype(int):
+        if int(f) == int(reference_frame):
+            continue
         reg.prev_gray = None                      # independent samples: no flow chain
         H, n = reg._absolute(reg._gray(read_frame(video, int(f))), None)
-        if H is not None:
-            worst = max(worst, drift_px(H, info.width, info.height))
+        if H is None:
+            return float("inf")
+        worst = max(worst, drift_px(H, info.width, info.height))
     return worst
+
+
+def register_run(video, raw, reference_frame: int, start: int, end: int, stride: int,
+                 fps: float, out_path: Path, extra_boxes=None, focal_px: float | None = None,
+                 log=print) -> dict:
+    """Camera motion of an existing run, without detecting again: every processed frame is
+    registered to the reference frame (the run's boxes masked out) -> registration.npz.
+    With the calibrated focal length the motion is modelled as a rotation (handheld pans)."""
+    import pandas as pd
+    from tqdm import tqdm
+
+    from .video import read_frame
+
+    cols = ["frame", "x1", "y1", "x2", "y2"]
+    allb = raw[cols] if extra_boxes is None else pd.concat([raw[cols], extra_boxes[cols]])
+    boxes = {f: g[cols[1:]].to_numpy(float) for f, g in allb.groupby("frame")}
+    ref = read_frame(video, reference_frame)
+    reg = RotationRegistrar(ref, focal_px) if focal_px else FrameRegistrar(ref)
+    cap = cv2.VideoCapture(str(video))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    frames, Hs, inl = [], [], []
+    for f in tqdm(range(start, end), desc="stabilize", unit="frame"):
+        ok, img = cap.read()
+        if not ok:
+            break
+        if (f - start) % stride:
+            continue
+        H, n = reg.register(img, boxes.get(f))
+        frames.append(f)
+        Hs.append(H)
+        inl.append(n)
+    cap.release()
+    Hs = reg.finalize(fps / max(stride, 1)) if frames else []
+    save_registration(out_path, frames, Hs, inl, reference_frame)
+    h, w = reg.h, reg.w
+    drift = [drift_px(H, w, h) for H in Hs] or [0.0]
+    failed = int(sum(1 for k, ok in enumerate(reg.abs_ok) if k % reg.abs_every == 0 and not ok))
+    log(f"stabilize: camera moved up to {max(drift):.1f} px from the reference frame; "
+        f"{failed} frames could not be matched to it (flow chain used)")
+    return {"reference_frame": reference_frame, "max_drift_px": round(max(drift), 1),
+            "registration_failures": failed}

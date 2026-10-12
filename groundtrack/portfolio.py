@@ -133,7 +133,7 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     """In-situ layers at out_h: frame (RGB, people blurred, aligned to the calibration
     frame), base (softened frame, float), trails and boxes (RGBA: a thin box in the group
     colour around every tracked object at that frame)."""
-    from .debug_video import blur_box, privacy_boxes, trail_samples
+    from .debug_video import HOLD_S, blur_boxes, privacy_boxes, trail_samples
     from .registration import apply_registration, load_registration
     from .trajectories import recover_feet
     from .video import read_frame
@@ -152,12 +152,11 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     from .debug_video import raw_all
 
     hide = privacy_boxes(raw_all(run_dir, raw), bool(dv.get("blur_people", True)),
-                         bool(dv.get("blur_plates", True)))
+                         bool(dv.get("blur_plates", True)), int(round(HOLD_S * fps)))
 
     def blurred(f):
         im = read_frame(video, f)
-        for r in hide[hide["frame"] == f].itertuples():
-            blur_box(im, r.x1, r.y1, r.x2, r.y2)
+        blur_boxes(im, hide.loc[hide["frame"] == f, ["x1", "y1", "x2", "y2"]].to_numpy())
         return im
 
     img = blurred(frame)

@@ -242,15 +242,28 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
 
         moved = measure_camera_motion(video, reference_frame_for(cfg))
         stab = moved > float(det.get("stabilize_threshold_px", 2.5))
-        log(f"stabilize auto: camera moved up to {moved:.1f} px -> "
-            + ("compensating camera motion" if stab else "static camera, no compensation needed"))
+        log("stabilize auto: " + (f"camera moved up to {moved:.1f} px" if np.isfinite(moved)
+                                  else "the view moved too far to match the reference frame")
+            + (" -> compensating camera motion" if stab else
+               " -> static camera, no compensation needed"))
     if stab:
         from .registration import FrameRegistrar
         from .video import read_frame
 
         ref_frame = reference_frame_for(cfg)
-        registrar = FrameRegistrar(read_frame(video, ref_frame))
-        log(f"stabilize: registering every frame to frame {ref_frame} (the calibration frame)")
+        focal = None
+        hp = cfg.path("homography")
+        if hp is not None and hp.exists():     # calibrated: model the motion as a rotation
+            focal = (json.loads(hp.read_text(encoding="utf-8")).get("camera_params")
+                     or {}).get("focal_px")
+        if focal:
+            from .registration import RotationRegistrar
+
+            registrar = RotationRegistrar(read_frame(video, ref_frame), float(focal))
+        else:
+            registrar = FrameRegistrar(read_frame(video, ref_frame))
+        log(f"stabilize: registering every frame to frame {ref_frame} (the calibration frame)"
+            + (", as a camera rotation (calibrated focal length)" if focal else ""))
 
     cap = cv2.VideoCapture(str(video))
     if start:

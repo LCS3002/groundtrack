@@ -230,6 +230,35 @@ def cmd_process(args):
     stage_process(cfg, run_dir, log=RunLog(Run(run_dir).log))
 
 
+def cmd_stabilize(args):
+    """Camera motion of an existing run (a handheld clip tracked without it), without
+    detecting again: writes the registration, then process the run again."""
+    import json
+
+    import pandas as pd
+
+    from .detect import reference_frame_for
+    from .layout import open_run
+    from .registration import register_run
+
+    cfg = _cfg(args)
+    run = open_run(_run_dir_arg(cfg, args.run))
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    raw = pd.read_csv(run.raw_tracks)
+    extra = pd.read_csv(run.privacy) if run.privacy.exists() else None
+    from .homography import Homography
+
+    hp = cfg.path("homography")
+    cam = (Homography.load(hp).camera_params or {}) if hp is not None and hp.exists() else {}
+    info = register_run(meta["video"], raw, reference_frame_for(cfg), int(meta["start_frame"]),
+                        int(meta["end_frame"]), int(meta["vid_stride"]), float(meta["fps"]),
+                        run.registration, extra, focal_px=cam.get("focal_px"))
+    meta.update(info)
+    run.meta.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"registration -> {run.registration}; now: groundtrack process -c {args.config} "
+          f"--run {run.root}")
+
+
 def cmd_rhino(args):
     """rhino/<site>.3dm + grasshopper_import.py for an existing run."""
     from .homography import Homography
@@ -446,6 +475,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-frames", type=int)
     s.add_argument("--debug-video", action="store_true", help="also write debug.mp4")
     s.set_defaults(func=cmd_run)
+
+    s = common(sub.add_parser("stabilize", help="camera motion for an existing run "
+                                                "(handheld, tracked without it)"))
+    s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
+    s.set_defaults(func=cmd_stabilize)
 
     s = common(sub.add_parser("rhino", help="Rhino .3dm + Grasshopper script for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")

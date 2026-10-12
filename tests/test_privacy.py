@@ -58,3 +58,24 @@ def test_untracked_detections_are_blurred_too(tmp_path):
                   "y2": [1080]}).to_csv(run.privacy, index=False)
     b = privacy_boxes(raw_all(run.root, tracked))
     assert set(b["x1"]) == {10, 500}
+
+
+def test_hold_bridges_frames_where_the_detector_lost_someone():
+    from groundtrack.debug_video import privacy_boxes
+
+    r = pd.DataFrame({"frame": [10, 14], "class": ["person", "person"], "x1": [0, 0],
+                      "y1": [0, 0], "x2": [50, 50], "y2": [100, 100]})
+    frames = set(privacy_boxes(r, hold=2)["frame"])
+    assert {11, 12, 13} <= frames and frames == set(range(8, 17))
+
+
+def test_blur_boxes_blurs_overlapping_boxes_as_one_area():
+    from groundtrack.debug_video import blur_boxes
+
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
+    out = img.copy()
+    blur_boxes(out, [(20, 20, 100, 100), (60, 60, 140, 140)])
+    assert out[30:90, 30:90].std() < 0.3 * img[30:90, 30:90].std()
+    assert out[110:130, 110:130].std() < 0.3 * img[110:130, 110:130].std()
+    assert np.array_equal(out[150:, :50], img[150:, :50])      # outside: untouched

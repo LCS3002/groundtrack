@@ -56,9 +56,15 @@ PLATE_BAND = 0.45         # lower part of a vehicle box: front and rear plates s
 PLATE_MIN_PX = 28         # smaller (further) vehicles: a plate is a few pixels, unreadable
 
 
-def privacy_boxes(r: pd.DataFrame, people: bool = True, plates: bool = True) -> pd.DataFrame:
+HOLD_S = 0.25            # every blur box is kept this long before and after its detection:
+                         # bridges the frames where the detector briefly loses someone
+
+
+def privacy_boxes(r: pd.DataFrame, people: bool = True, plates: bool = True,
+                  hold: int = 0) -> pd.DataFrame:
     """Boxes to blur (frame, x1, y1, x2, y2): every person, and the lower band of every
-    vehicle close enough for its number plate to be readable."""
+    vehicle close enough for its number plate to be readable. hold: also apply each box this
+    many frames before and after (a person the detector misses for a frame stays blurred)."""
     cols = ["frame", "x1", "y1", "x2", "y2"]
     parts = []
     if people:
@@ -67,7 +73,31 @@ def privacy_boxes(r: pd.DataFrame, people: bool = True, plates: bool = True) -> 
         v = r.loc[r["class"].isin(VEHICLE_CLASSES), cols]
         v = v[(v["y2"] - v["y1"]) >= PLATE_MIN_PX]
         parts.append(v.assign(y1=v["y2"] - PLATE_BAND * (v["y2"] - v["y1"])))
-    return pd.concat(parts) if parts else pd.DataFrame(columns=cols)
+    out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cols)
+    if hold > 0 and len(out):
+        offs = np.arange(-int(hold), int(hold) + 1)
+        out = out.loc[out.index.repeat(len(offs))].reset_index(drop=True)
+        out["frame"] = out["frame"].to_numpy() + np.tile(offs, len(out) // len(offs))
+    return out
+
+
+def blur_boxes(img, boxes) -> None:
+    """Blur every box; overlapping boxes (a held person, a crowd) are blurred as one area."""
+    b = np.asarray(boxes, float).reshape(-1, 4)
+    if not len(b):
+        return
+    h, w = img.shape[:2]
+    m = np.zeros((h, w), np.uint8)
+    for x1, y1, x2, y2 in b:
+        m[max(int(y1), 0):max(int(y2), 0), max(int(x1), 0):max(int(x2), 0)] = 1
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    for k in range(1, n):
+        x, y, bw, bh, _ = stats[k]
+        roi = img[y:y + bh, x:x + bw]
+        kk = int(min(max(15, (min(bw, bh) // 3) | 1), 151))
+        blurred = cv2.GaussianBlur(roi, (kk, kk), 0)
+        sel = lab[y:y + bh, x:x + bw] == k
+        roi[sel] = blurred[sel]
 
 
 def _smooth_image_paths(raw: pd.DataFrame, uv: np.ndarray, fps: float, window_s: float = 0.4):
@@ -283,7 +313,9 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
     th = max(1, int(round(2 * max(W, H) / 1920)))
     # every blur needs the unfiltered detections, even in the clean style
-    blur_rows = {f: g for f, g in privacy_boxes(raw_all(run_dir, raw), blur, plates)
+    hold = int(round(HOLD_S * fps))
+    blur_rows = {f: g[["x1", "y1", "x2", "y2"]].to_numpy()
+                 for f, g in privacy_boxes(raw_all(run_dir, raw), blur, plates, hold)
                  .groupby("frame")} if (blur or plates) else {}
 
     canvas = np.zeros((H, W, 3), np.uint8)   # trail layer, calibration-frame pixels
@@ -328,8 +360,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
             for f_s, a, b, c, t in segments:      # oldest first: the newest on top
                 _draw(canvas, alpha, a, b, c, t, 255 * (1 - (f - f_s) / span) ** 0.7)
 
-        for r in (blur_rows.get(f).itertuples() if f in blur_rows else ()):
-            blur_box(img, r.x1, r.y1, r.x2, r.y2)
+        if f in blur_rows:
+            blur_boxes(img, blur_rows[f])
         H_f = reg.get(f) if reg is not None else None
         if stable and H_f is not None:
             # output in calibration-frame pixels: the picture stops moving
