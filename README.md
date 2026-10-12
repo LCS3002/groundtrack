@@ -580,9 +580,12 @@ several groups there is also a **master field** (`data/field_master.csv`,
 `houdini/vector_field_master.csv`, `images/plan_flowfield_master.png`): every group on one grid,
 with the pooled velocity of everything that moves (weighted by how much each group was seen),
 per-group columns (`people_vx`, `vehicles_speed`, ...) and the `dominant_group` of each cell.
-The image draws each group's streamlines in its colour (people blue, cyclists green, buses
-orange, vehicles red), and the Houdini and Grasshopper scripts use the master as their default
-field. Rough
+The image draws the pooled field as continuous streamlines, smoother and denser than the
+per-group plans (a site-wide plan), each line coloured by the group that dominates where it passes
+(people blue, cyclists green, buses orange, vehicles red; dominance = most object-seconds per m²).
+Where people outnumber them, cyclists and buses fall under the people's colour: their own fields
+stay in `plan_flowfield_<group>`. The Houdini and Grasshopper scripts use the master as their
+default field. Rough
 calibrations (`method_info.grade` in the calibration file) are included unless `--only-ok`.
 
 **Overlapping views.** Where two or more clips see the same ground, their vectors are pooled

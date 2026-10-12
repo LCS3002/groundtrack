@@ -192,7 +192,7 @@ def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.
     """Every group's flow on one grid: the pooled velocity of everything that moves (vx, vy,
     speed, ... as in any vector field, weighted by how much each group was seen there), plus
     per-group columns <group>_vx, _vy, _speed, _density, _confidence, _weight and the
-    dominant_group (most observed) of each cell."""
+    dominant_group (highest density: most object-seconds per m^2) of each cell."""
     p = pts[~pts["predicted"].astype(bool) & pts["group"].isin(groups)]
     x, y = p["x"].to_numpy(), p["y"].to_numpy()
     m = 3 * smooth_m
@@ -200,17 +200,18 @@ def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.
               int(np.floor((y.min() - m) / cell)), int(np.floor((y.max() + m) / cell)))
     out = smooth_field(p, cell, smooth_m, float(p["dt"].median()), bounds=bounds)
     out = out.set_index(["i", "j"])
-    weights = []
+    dens = []
     for g in groups:
         sel = p[p["group"] == g]
         f = smooth_field(sel, cell, smooth_m, float(sel["dt"].median()), bounds=bounds)
         cols = ["vx", "vy", "speed", "density", "confidence", "weight"]
         out = out.join(f.set_index(["i", "j"])[cols].add_prefix(f"{g}_"), how="outer")
-        weights.append(f"{g}_weight")
+        dens.append(f"{g}_density")
     out = out.reset_index()
     out["cell_x"] = (out["i"] + 0.5) * cell
     out["cell_y"] = (out["j"] + 0.5) * cell
-    w = out[weights].fillna(0.0).to_numpy()
+    # the most observed group: density (object-seconds per m^2) is comparable across groups
+    w = out[dens].fillna(0.0).to_numpy()
     out["dominant_group"] = np.where(w.max(axis=1) > 0,
                                      np.array(groups, dtype=object)[w.argmax(axis=1)], "")
     return out
@@ -271,11 +272,18 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         mf = master_field(pts, master_groups, fc, float(cfg["field"]["smooth_m"]))
         mf.to_csv(data / "field_master.csv", index=False)
         mf.to_csv(hou / "vector_field_master.csv", index=False)
-        layer = None
-        for gname in master_groups:
-            fl = flow_layer(pd.read_csv(field_files[gname]), ext, (W, H), fc, ranges[gname],
-                            line_px=1.5 * plan_height_px / 2000, colour=group_rgb(gname))
-            layer = fl if layer is None else pf.stack_rgba(layer, fl)
+        # the image: the pooled field of everything that moves, smoother and drawn denser than
+        # the per-group plans (a site-wide plan), each line in the colour of the group that
+        # dominates where it passes
+        span = max(ext[1] - ext[0], ext[3] - ext[2])
+        look = master_field(pts, master_groups, fc,
+                            float(np.clip(span * 0.012, float(cfg["field"]["smooth_m"]), 4.0)))
+        look = look.assign(palette_index=look["dominant_group"].map(
+            {g: k for k, g in enumerate(master_groups)}).astype(float))
+        layer = flow_layer(look, ext, (W, H), fc, (0.0, 1.0), min_confidence=0.3,
+                           min_dominance=0.5, line_px=1.5 * plan_height_px / 2000, spacing_m=1.3,
+                           min_len_m=float(np.clip(span * 0.045, 4.0, 14.0)), bold=1.5,
+                           palette=[group_rgb(g) for g in master_groups])
         _save(_over(base, layer), images / "plan_flowfield_master.png")
         _save(layer, images / "plan_flowfield_master_layer.png")
         log(f"  master field: {', '.join(master_groups)} on one grid ({len(mf)} cells)")

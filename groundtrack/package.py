@@ -62,9 +62,13 @@ def _save(img: np.ndarray, path: Path) -> Path:
 # --------------------------------------------------------------------------- layers
 def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
                min_confidence: float = 0.5, min_dominance: float = 0.6,
-               line_px: float = 1.6, colour=None) -> np.ndarray:
+               line_px: float = 1.6, colour=None, spacing_m: float | None = None,
+               min_len_m: float = 6.0, bold: float = 1.0, palette=None) -> np.ndarray:
     """Streamlines of the vector field on transparency (straight-alpha RGBA uint8), in the
-    shared speed colours (or all in one `colour`, RGB 0..255).
+    shared speed colours (or all in one `colour`, RGB 0..255). spacing_m: about how far apart
+    the lines start (default ~3 m, denser on big plans); min_len_m: shorter lines are dropped;
+    bold: line width factor. palette: colours (RGB 0..255) indexed by the field's
+    "palette_index" column instead of the speed ramp (e.g. the dominant group of each cell).
 
     Drawn only where the field is well supported (confidence) and coherent (dominance:
     most movement in one direction); where streams cross, lines would invent swirls."""
@@ -99,15 +103,26 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     ax.set_ylim(ext[2], ext[3])
     pt = 0.72 * line_px                                   # px -> pt at 100 dpi
     span = max(ext[1] - ext[0], ext[3] - ext[2])
-    # streamplot works in fractions of the plot: keep lines >= 6 m and ~3 m apart in any extent
-    density = float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0))
-    minlength = float(np.clip(6.0 / max(span, 1e-6), 0.01, 0.12))
+    # streamplot works in fractions of the plot: lines >= min_len_m long and spaced in metres
+    density = (float(np.clip(span / (30 * spacing_m), 1.2, 12.0)) if spacing_m else
+               float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0)))
+    minlength = float(np.clip(min_len_m / max(span, 1e-6), 0.01, 0.5))
     if len(xs) > 1 and len(ys) > 1 and (~weak).sum() > 4:
-        paint = (dict(color=tuple(c / 255 for c in colour)) if colour is not None else
-                 dict(color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi)))
+        if palette is not None:
+            from matplotlib.colors import ListedColormap
+
+            G = np.zeros_like(C)
+            G[field["j"].to_numpy() - int(field["j"].min()),
+              field["i"].to_numpy() - int(field["i"].min())] =                 field["palette_index"].fillna(0).to_numpy()
+            paint = dict(color=G, norm=Normalize(-0.5, len(palette) - 0.5),
+                         cmap=ListedColormap([tuple(c / 255 for c in rgb) for rgb in palette]))
+        elif colour is not None:
+            paint = dict(color=tuple(c / 255 for c in colour))
+        else:
+            paint = dict(color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi))
         ax.streamplot(xs, ys, Um, Vm, **paint,
-                      linewidth=pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
-                      density=density, arrowsize=0.9 * line_px, arrowstyle="-|>",
+                      linewidth=bold * pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
+                      density=density, arrowsize=0.9 * line_px * bold, arrowstyle="-|>",
                       minlength=minlength)
     fig.canvas.draw()
     rgba = np.asarray(fig.canvas.buffer_rgba(), np.uint8).copy()
