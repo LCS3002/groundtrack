@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
-from .colors import cmap
+from .colors import cmap, group_rgb
 from .config import Config
 from .geo import GeoRaster
 from .layout import open_run
@@ -131,7 +131,8 @@ def stack_rgba(bottom: np.ndarray, top: np.ndarray) -> np.ndarray:
 def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: int,
                   frame: int | None = None, line_px: float = 1.6) -> dict:
     """In-situ layers at out_h: frame (RGB, people blurred, aligned to the calibration
-    frame), base (darkened frame, float), trails (additive light layer, float)."""
+    frame), base (softened frame, float), trails and boxes (RGBA: a thin box in the group
+    colour around every tracked object at that frame)."""
     from .debug_video import blur_box, privacy_boxes, trail_samples
     from .registration import apply_registration, load_registration
     from .trajectories import recover_feet
@@ -143,8 +144,9 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     reg, ref_frame = None, 0
     if run.registration.exists():
         reg, ref_frame, _ = load_registration(run.registration)
-    if frame is None:
-        frame = int((raw["frame"].min() + raw["frame"].max()) // 2)
+    if frame is None:     # the processed frame nearest the middle of the clip
+        fr = np.sort(raw["frame"].unique())
+        frame = int(fr[np.argmin(np.abs(fr - (fr[0] + fr[-1]) / 2))])
 
     dv = cfg.get("debug_video") or {}
     from .debug_video import raw_all
@@ -182,15 +184,45 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
                        cv2.COLOR_BGR2RGB)
     stride = max(1, int(np.median(np.diff(np.sort(raw["frame"].unique())))))
     trails = _trail_layer(rgb.shape[:2], _segments_from(paths, lo_, hi_, 3 * stride), line_px)
+    # boxes of the tracks drawn (kept by cleaning), in the picture's (registered) pixels
+    at = raw[(raw["frame"] == frame) & keep & ~raw["predicted"]]
+    Hf = reg.get(frame) if reg is not None else None
+    boxes = []
+    for r in at.itertuples():
+        c = np.array([[r.x1, r.y1], [r.x2, r.y1], [r.x2, r.y2], [r.x1, r.y2]], np.float64)
+        if Hf is not None:
+            c = cv2.perspectiveTransform(c.reshape(-1, 1, 2), Hf).reshape(-1, 2)
+        boxes.append((c.min(axis=0) * s, c.max(axis=0) * s,
+                      group_rgb(cfg.class_to_group.get(r[2], ""))))
     return {"frame_rgb": rgb, "base": _soften(rgb, *SOFTEN_INSITU), "trails": trails,
+            "boxes": _box_layer(rgb.shape[:2], boxes, max(1.0, 0.8 * line_px)),
             "speed_range": (lo_, hi_), "frame": frame}
+
+
+def _box_layer(shape, boxes, width: float) -> np.ndarray:
+    """Thin rectangles [(top-left, bottom-right, rgb), ...] on transparency (RGBA uint8)."""
+    h, w = shape
+    ss = 2
+    col = np.zeros((h * ss, w * ss, 3), np.float32)
+    cov = np.zeros((h * ss, w * ss), np.float32)
+    lw = max(1, int(round(width * ss)))
+    for p1, p2, c in boxes:
+        a = (int(round(p1[0] * ss)), int(round(p1[1] * ss)))
+        b = (int(round(p2[0] * ss)), int(round(p2[1] * ss)))
+        cv2.rectangle(col, a, b, tuple(float(v) for v in c), lw, cv2.LINE_AA)
+        cv2.rectangle(cov, a, b, 1.0, lw, cv2.LINE_AA)
+    col, cov = (cv2.resize(x, (w, h), interpolation=cv2.INTER_AREA) for x in (col, cov))
+    cov = np.clip(cov, 0, 1)[..., None]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rgb = np.where(cov > 0, col / cov, 0)
+    return np.dstack([rgb, cov * 255]).clip(0, 255).astype(np.uint8)
 
 
 def insitu_panel(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: int,
                  frame: int | None = None, line_px: float = 1.6):
     L = insitu_layers(video, run_dir, cfg, fps, out_h, frame, line_px)
-    return np.clip(over(L["base"], L["trails"]), 0, 255).astype(np.uint8), L["speed_range"], \
-        L["frame"]
+    img = over(over(L["base"], L["trails"]), L["boxes"])
+    return np.clip(img, 0, 255).astype(np.uint8), L["speed_range"], L["frame"]
 
 
 def _segments_from(paths, lo, hi, max_gap):
@@ -411,7 +443,8 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
     nouns = [GROUP_NOUN.get(g_, g_) for g_ in groups]
     who = nouns[0] if len(nouns) == 1 else ", ".join(nouns[:-1]) + " and " + nouns[-1]
     _text(d, (margin, H - 95), "Trails: every tracked " + who
-          + " of the clip, coloured by measured speed. People and number plates are blurred."
+          + " of the clip, coloured by measured speed; boxes: people blue, cyclists green,"
+          + " vehicles red. People and number plates are blurred."
           + (f" Imagery: {credit.rstrip('.')}." if credit else ""), 22, "Light", (96, 96, 100),
           tracking=0.02)
     out_png = Path(out_png)

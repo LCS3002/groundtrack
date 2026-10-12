@@ -24,6 +24,16 @@ def cmap():
     return LinearSegmentedColormap.from_list(RAMP_NAME, base(np.linspace(_LO, _HI, 256)))
 
 
+# box colour per group (overlay videos, in-situ stills): people blue, cyclists green, and
+# every other group (cars, buses, trucks, trains) red as a vehicle
+GROUP_RGB = {"people": (40, 130, 255), "cycles": (40, 190, 80)}
+VEHICLE_RGB = (230, 45, 45)
+
+
+def group_rgb(group: str) -> tuple[int, int, int]:
+    return GROUP_RGB.get(group, VEHICLE_RGB)
+
+
 def ramp_rgb(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """Values -> (N, 3) RGB floats in 0..1 (sRGB) using the shared ramp."""
     v = np.clip((np.asarray(values, float) - lo) / max(hi - lo, 1e-9), 0, 1)

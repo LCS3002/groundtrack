@@ -45,7 +45,8 @@ def test_composite_normalises_density_by_time_in_view(tmp_path):
               "images/plan_density_people_layer.png", "images/plan_coverage_layer.png",
               "images/plan_flowfield_people.png", "labels/legend_density_people_light.png",
               "labels/camera_numbers.txt", "data/points_all.csv", "data/clips.csv",
-              "houdini/houdini_import.py"):
+              "houdini/houdini_import.py", "houdini/houdini_field.py",
+              "houdini/vector_field_people.csv", "rhino/grasshopper_import.py"):
         assert (out / f).exists(), f
     pts = pd.read_csv(out / "data/points_all.csv")
     assert pts["track_id"].nunique() == 6                     # ids stay apart across clips

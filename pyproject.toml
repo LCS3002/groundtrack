@@ -19,6 +19,7 @@ dependencies = [
     "matplotlib>=3.7",
     "pyyaml>=6.0",
     "tqdm>=4.65",
+    "rhino3dm>=8.0",          # .3dm export for Rhino / Grasshopper
 ]
 # PyTorch is installed separately so you get the right build for your machine (see README).
 

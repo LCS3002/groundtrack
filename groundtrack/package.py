@@ -2,7 +2,7 @@
 
 Written into the run folder (see layout.py):
     <site>_plate.png      the complete plate
-    images/   insitu_frame, insitu_tracks, plan_aerial, plan_map, plan_tracks, plan_flowfield,
+    images/   insitu_frame, insitu_tracks (+ insitu_boxes_layer), plan_aerial, plan_map, plan_tracks, plan_flowfield,
               plan_density: pure images, nothing around the data (no title, frame, axes,
               legend or scale bar). <name>_layer.png = the drawing alone on transparency.
     labels/   legend_speed, legend_density, scale_bar, north_arrow (each _light for dark
@@ -297,8 +297,10 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         insitu = pf.insitu_layers(video, run.root, cfg, fps, int(meta["height"]),
                                   line_px=1.6 * int(meta["height"]) / 1400)
         _save(insitu["frame_rgb"], images / "insitu_frame.png")
-        _save(_over(insitu["base"], insitu["trails"]), images / "insitu_tracks.png")
+        _save(_over(_over(insitu["base"], insitu["trails"]), insitu["boxes"]),
+              images / "insitu_tracks.png")
         _save(insitu["trails"], images / "insitu_tracks_layer.png")
+        _save(insitu["boxes"], images / "insitu_boxes_layer.png")
     else:
         log(f"images: footage {video} not found, in-situ images skipped")
 

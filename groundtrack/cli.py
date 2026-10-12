@@ -230,6 +230,20 @@ def cmd_process(args):
     stage_process(cfg, run_dir, log=RunLog(Run(run_dir).log))
 
 
+def cmd_rhino(args):
+    """rhino/<site>.3dm + grasshopper_import.py for an existing run."""
+    from .homography import Homography
+    from .layout import open_run
+    from .rhino import write_rhino
+
+    cfg = _cfg(args)
+    run = open_run(_run_dir_arg(cfg, args.run))
+    h = Homography.load(run.homography_used)
+    cp = getattr(h, "camera_params", None) or {}
+    cams = [(cfg.site, cp["E"], cp["N"], cp.get("height_m", 0.0))] if "E" in cp else []
+    write_rhino(run.root, cfg, h.origin, h.ground_z_m, cameras=cams)
+
+
 def cmd_package(args):
     from .geo import load_geotiff
     from .package import build_package
@@ -432,6 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-frames", type=int)
     s.add_argument("--debug-video", action="store_true", help="also write debug.mp4")
     s.set_defaults(func=cmd_run)
+
+    s = common(sub.add_parser("rhino", help="Rhino .3dm + Grasshopper script for a run"))
+    s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
+    s.set_defaults(func=cmd_rhino)
 
     s = common(sub.add_parser("package", help="frameless images + labels/metrics for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")

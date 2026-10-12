@@ -134,6 +134,7 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
                                gcfg["include_predicted"]).to_csv(p, index=False)
 
     out.update(_export_field(cfg, run, points, h, stride / fps))
+    out.update(_export_rhino(cfg, run, h, log))
 
     window = (meta["start_frame"] / fps, meta["end_frame"] / fps)
     stats = exports.compute_stats(points, summary, cfg, window)
@@ -308,6 +309,19 @@ def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log
 def _field_groups(points: pd.DataFrame) -> list[str]:
     present = sorted(set(points["group"])) if len(points) else []
     return ["all"] + (present if len(present) > 1 else [])
+
+
+def _export_rhino(cfg: Config, run: Run, h: Homography, log) -> dict:
+    """rhino/<site>.3dm and grasshopper_import.py (see rhino.py)."""
+    from .rhino import write_rhino
+
+    cp = getattr(h, "camera_params", None) or {}
+    cams = [(cfg.site, cp["E"], cp["N"], cp.get("height_m", 0.0))] if "E" in cp else []
+    try:
+        return write_rhino(run.root, cfg, h.origin, h.ground_z_m, log, cameras=cams)
+    except Exception as e:                       # never lose a run over the Rhino files
+        log(f"rhino export failed: {e}")
+        return {}
 
 
 def _export_field(cfg: Config, run: Run, points: pd.DataFrame, h: Homography,

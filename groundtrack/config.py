@@ -161,11 +161,12 @@ DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "blur_people": True,
         "blur_plates": True,      # the lower part of every near vehicle (number plates)
-        "trail_s": None,          # None = trails stay for the whole clip; e.g. 3 = last 3 s
+        "trail_s": 3.0,           # each trail fades out over the last 3 s; null = whole clip
         "style": "clean",         # clean: trails + dots, cleaned tracks only | boxes: debug
-        "boxes": True,            # clean style: a thin box around each object, speed colour
+        "boxes": True,            # clean style: a thin box per object (people blue,
+                                  # cyclists green, vehicles red)
         "stabilize_output": True, # align the output video to the calibration frame
-        "dim": 0.75,              # darken the video under the trails (clean style)
+        "dim": 1.0,               # < 1 darkens the video under the trails
     },
 }
 

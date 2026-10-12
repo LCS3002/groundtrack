@@ -12,7 +12,8 @@ not twice as busy, and an area nobody filmed is blank rather than empty.
 
 Output folder (same idea as a run's package): images/ frameless plan images and layers,
 labels/ legends, scale bar, north arrow, titles, data/ all points + per-clip table + grids,
-houdini/ the combined points with the import script.
+houdini/ the combined points and fields with the import / field scripts, rhino/ a .3dm (tracks,
+field arrows, cameras and view outlines) and the Grasshopper script.
 """
 
 from __future__ import annotations
@@ -216,12 +217,15 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
 
     # ---- flow field per group (each on its own speed scale)
     fc = float(cfg["field"]["cell_size_m"])
+    field_files = {}
     for gname, rg in ranges.items():
         g = pts[pts["group"] == gname]
         if g["track_id"].nunique() < 5:
             continue
         fld = smooth_field(g, fc, float(cfg["field"]["smooth_m"]), float(g["dt"].median()))
         fld.to_csv(data / f"field_grid_{gname}.csv", index=False)
+        field_files[gname] = hou / f"vector_field_{gname}.csv"     # for Houdini / Grasshopper
+        fld.to_csv(field_files[gname], index=False)
         fl = flow_layer(fld, ext, (W, H), fc, rg, line_px=1.5 * plan_height_px / 2000)
         _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
         _save(fl, images / f"plan_flowfield_{gname}_layer.png")
@@ -349,12 +353,40 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         for key, label, value, unit in metrics:
             w.writerow([key, value, unit, label])
 
-    # ---- houdini: the combined points with the usual import script
-    from .exports import write_houdini_script
+    # ---- houdini + rhino: the combined points and fields with the usual scripts
+    from .exports import write_houdini_field_script, write_houdini_script
+    from .rhino import write_3dm, write_grasshopper_script
 
-    pts.drop(columns=["dt"]).to_csv(hou / "points.csv", index=False)
-    write_houdini_script(hou / "houdini_import.py", hou / "points.csv",
-                         (round(float(np.mean(ext[:2]))), round(float(np.mean(ext[2:])))), cfg,
-                         z0=clips[0].homography.ground_z_m)
+    origin = (round(float(np.mean(ext[:2]))), round(float(np.mean(ext[2:]))))
+    z0 = clips[0].homography.ground_z_m
+    allp = pts.drop(columns=["dt"])
+    allp.to_csv(hou / "points.csv", index=False)
+    write_houdini_script(hou / "houdini_import.py", hou / "points.csv", origin, cfg, z0=z0)
+    if field_files:
+        groups_field = dict(field_files)
+        if len(groups_field) > 1 or "all" not in groups_field:
+            groups_field["all"] = next(iter(field_files.values()))    # default field
+        write_houdini_field_script(hou / "houdini_field.py", groups_field, {},
+                                   hou / "points.csv", origin, fc, cfg)
+    rh = out_dir / "rhino"
+    dur = float(allp.groupby("clip")["time_s"].agg(lambda s: s.max() - s.min()).max()) if len(allp) else 0.0
+    write_grasshopper_script(rh / "grasshopper_import.py", hou / "points.csv", field_files,
+                             origin, z0, cfg, fc, dur)
+    try:
+        cams = [(c.name, c.homography.camera_params["E"], c.homography.camera_params["N"],
+                 c.homography.camera_params.get("height_m", 0.0)) for c in clips]
+        rings = []
+        for name, mk in fp.items():          # each view's outline, back to metres
+            cs, _ = cv2.findContours(mk.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                     cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in cs:
+                q = cnt.reshape(-1, 2).astype(float)
+                if len(q) >= 3:
+                    rings.append((name, [(x0 + (u + 0.5) * GRID_M, y0 + (v + 0.5) * GRID_M)
+                                         for u, v in q]))
+        fl = {k: pd.read_csv(f) for k, f in field_files.items()}
+        write_3dm(rh / f"{out_dir.name}.3dm", allp, fl, origin, z0, cfg, fc, cams, rings, title)
+    except ImportError:
+        log("rhino: rhino3dm not installed (pip install rhino3dm), .3dm skipped")
     log(f"composite -> {out_dir}")
     return out_dir

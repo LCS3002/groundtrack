@@ -8,6 +8,7 @@
       videos/    overlay, topdown, flowfield (+ <name>_clean.mp4: the same without labels)
       data/      metrics.csv/json, points.csv, track_metrics.csv, tracks.geojson, grids, stats
       houdini/   houdini_import.py, houdini_field.py and the CSVs they read
+      rhino/     <site>.3dm (tracks, field arrows, layers per group) and grasshopper_import.py
       extras/    the maps with legends (topdown, flow field, density, speed histogram)
       _working/  tracker output, camera motion, config + calibration snapshot, log
 
@@ -20,7 +21,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-FOLDERS = ("images", "labels", "videos", "data", "houdini", "extras", "_working")
+FOLDERS = ("images", "labels", "videos", "data", "houdini", "rhino", "extras", "_working")
 
 
 class Run:
@@ -33,6 +34,7 @@ class Run:
     videos = property(lambda s: s.root / "videos")
     data = property(lambda s: s.root / "data")
     houdini = property(lambda s: s.root / "houdini")
+    rhino = property(lambda s: s.root / "rhino")
     extras = property(lambda s: s.root / "extras")
     work = property(lambda s: s.root / "_working")
 

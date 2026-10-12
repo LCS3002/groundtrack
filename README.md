@@ -501,13 +501,13 @@ _working/           tracker output, camera motion, config + calibration snapshot
 
 | file | contents |
 |---|---|
-| `images/insitu_frame.png`, `insitu_tracks.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, slightly softened, with every track as a thin trail coloured by speed (blue slow → red fast, the same ramp as the videos and Houdini) |
+| `images/insitu_frame.png`, `insitu_tracks.png`, `insitu_boxes_layer.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, slightly softened, with every track as a thin trail coloured by speed (blue slow → red fast, the same ramp as the videos and Houdini) and a thin box in the group colour around each object at that moment (boxes also alone as a layer) |
 | `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour, and softened a little (the base of the others, so the coloured lines read) |
 | `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | tracks (each with a thin dark edge), vector-field streamlines (only where the flow is well supported and one-directional) and occupancy (inferno: purple → yellow) |
 | `images/*_layer.png` | the same drawings alone on transparency, to stack in Photoshop / InDesign / Illustrator. All `plan_*` images and layers share one extent and size |
 | `labels/legend_speed`, `legend_density`, `scale_bar`, `north_arrow` | `_light` (white ink, for dark backgrounds) and `_dark`, transparent. The scale bar is drawn at the plan images' pixel scale: resize the two together. `title.txt` holds the plate text |
 | `<site>_plate.png` | the complete plate, dark type on paper. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
-| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot and a thin box (same colour; `debug_video.boxes: false` hides it) at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
+| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed that fade out over the last 3 s (`debug_video.trail_s`, `null` keeps whole paths), with a dot and a thin box in the group's colour (people blue, cyclists green, vehicles red; `debug_video.boxes: false` hides them) at each current position, over the undimmed picture aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
 | `videos/topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
 | `videos/flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
 | `videos/*_clean.mp4` | the same videos without clock, legend, scale bar or title |
@@ -520,6 +520,7 @@ _working/           tracker output, camera motion, config + calibration snapshot
 | (flow) | for traffic, put a `count_lines` entry across the road: those crossings, by direction, are the flow. The per-group "tracks" number also counts fragments and side roads |
 | `data/stats.json`, `stats.csv` | per class and group: tracks, flow per minute (as a time series and a mean), mean/median/85th-percentile speed, speed histogram, mean straightness, plus count-line crossings |
 | `houdini/` | `houdini_import.py`, `houdini_field.py` (§6) and the `points.csv` / `vector_field*.csv` they read |
+| `rhino/` | `<site>.3dm` and `grasshopper_import.py` for Rhino 8 / Grasshopper (§6) |
 | `extras/topdown.png` | tracks over the dimmed GeoTIFF, coloured by speed blue → red, with a separate scale per group, scale bar and north arrow, 300 dpi |
 | `extras/flow_field.png`, `density.png`, `speed_histogram.png` | streamlines, occupancy (object-seconds per m²) and mean speed per track, with legends |
 | `_working/raw_tracks.csv` | the tracker output in pixels (`bbox`, `confidence`, `predicted`) |
@@ -635,6 +636,44 @@ edge of the observed area instead of hitting a wall.
 If a node wants a VDB vector field: Convert VDB on the three `vel.*` volumes, then VDB Vector
 Merge → `vel`. The axes and origin are the same as `houdini_import.py`, so the field, the
 measured tracks and the particles all line up.
+
+Composites (`groundtrack composite`) have the same two scripts in their `houdini/` folder, with
+`vector_field_<group>.csv` of all clips together.
+
+### Rhino 8 and Grasshopper (`rhino/`)
+
+Every run and every composite also gets a `rhino/` folder (`groundtrack rhino -c ... --run ...`
+writes it for older runs):
+
+* **`<site>.3dm`**: open it in Rhino, or bring it into Grasshopper with *Geometry Pipeline*
+  (filter by layer). Units are metres. It holds a layer tree `groundtrack` with, per group:
+  * `tracks_<group>`: one polyline per track, coloured by its mean speed;
+  * `speed_segments_<group>` (hidden): the same tracks, cut wherever the speed colour changes;
+  * `samples_<group>` (hidden): every sample as a point cloud in the speed colours.
+
+  It also has `field_<group>` (one arrow per well-supported field cell, length ~ speed) and
+  `cameras` (camera positions; for composites also each clip's view outline). Each object
+  carries its numbers as attribute user text (`track_id`, `group`, `mean_speed`, `clip`; for
+  arrows `vx`, `vy`, `speed`, `confidence`).
+* **`grasshopper_import.py`**: add a **Python 3 Script** component, paste the file, then add
+  outputs named `tracks`, `points`, `vectors`, `field_points`, `field_vectors` (and, as needed,
+  `track_colour`, `track_info`, `speeds`, `colours`, `field_speed`, `field_confidence`,
+  `field_colour`). Optional inputs:
+  * `t`: a Number Slider in seconds. Points become where everyone is at that moment, with their
+    velocity vectors.
+  * `tail`: seconds of path to keep behind `t`.
+  * `group`, `field`: pick one group's tracks or field.
+  * `min_confidence`, `step`: filter field cells and thin the samples.
+
+  The CSVs are cached between recomputes, so dragging the slider stays fast. `field_points` +
+  `field_vectors` are a flow field for particle or agent sims (Kangaroo, Anemone loops,
+  streamlines). The tracks and their colours are ready to bake for collage. To keep it in
+  the toolbar: select the component, *File → Create User Object*.
+
+Coordinates in both are metres from the run's origin (British National Grid E/N stored on the
+`groundtrack` layer and printed by the script), Z up. With a terrain model, heights are above
+`origin_Z`, so the Trafalgar terrace sits 3 m above the square. Grasshopper scales to the
+document's units automatically.
 
 ---
 

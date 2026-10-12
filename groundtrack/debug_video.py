@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from .colors import ramp_rgb
+from .colors import group_rgb, ramp_rgb
 from .config import Config
 from .layout import open_run
 
@@ -150,12 +150,24 @@ def _bgr(speed, lo, hi):
     return (int(b * 255), int(g * 255), int(r * 255))
 
 
-def _legend(img, mode: str, cfg: Config, th: int):
+def _legend(img, mode: str, cfg: Config, th: int, groups=()):
+    """Speed bar (bottom left); with boxes, one small key per group above it."""
     h, w = img.shape[:2]
     bw, bh = int(w * 0.32), max(8, 6 * th)
     x0, y0 = 12 * th, h - 24 * th
-    cv2.rectangle(img, (x0 - 6 * th, y0 - 16 * th), (x0 + bw + 6 * th, y0 + bh + 12 * th),
-                  (30, 30, 30), -1)
+    key_h = 14 * th if groups else 0
+    cv2.rectangle(img, (x0 - 6 * th, y0 - 16 * th - key_h),
+                  (x0 + bw + 6 * th, y0 + bh + 12 * th), (30, 30, 30), -1)
+    x = x0
+    for g in groups:
+        r, gg, b = group_rgb(g)
+        ky = y0 - 16 * th - key_h + 4 * th
+        cv2.rectangle(img, (x, ky), (x + 7 * th, ky + 7 * th), (b, gg, r), max(1, th // 2 + 1),
+                      cv2.LINE_AA)
+        cv2.putText(img, g, (x + 10 * th, ky + 6 * th), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * th,
+                    (255, 255, 255), max(1, th // 2), cv2.LINE_AA)
+        (tw, _), _ = cv2.getTextSize(g, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * th, max(1, th // 2))
+        x += 10 * th + tw + 12 * th
     bar = (ramp_rgb(np.linspace(0, 1, bw), 0, 1)[:, ::-1] * 255).astype(np.uint8)
     img[y0:y0 + bh, x0:x0 + bw] = bar[None, :, :]
     if mode == "relative":
@@ -172,11 +184,11 @@ def _legend(img, mode: str, cfg: Config, th: int):
     cv2.putText(img, right, (x0 + bw - tw, y0 + bh + 8 * th), font, fs, white, tt, cv2.LINE_AA)
 
 
-def _draw(canvas, alpha, a, b, col, t):
+def _draw(canvas, alpha, a, b, col, t, opacity=255):
     pa = (int(round(a[0])), int(round(a[1])))
     pb = (int(round(b[0])), int(round(b[1])))
     cv2.line(canvas, pa, pb, col, t, cv2.LINE_AA)
-    cv2.line(alpha, pa, pb, 255, t, cv2.LINE_AA)
+    cv2.line(alpha, pa, pb, int(opacity), t, cv2.LINE_AA)
 
 
 def _good_tracks(raw: pd.DataFrame, speed: np.ndarray, mode: str, fps: float,
@@ -202,7 +214,8 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     """Render the overlay video.
 
     style "clean" (default): only the tracks that survive cleaning, as speed-coloured trails
-    with a dot at each current position, over a slightly dimmed video.
+    fading out over the last `trail_s` seconds, with a dot and a thin box in the group's
+    colour (people blue, cyclists green, vehicles red) at each current position.
     style "boxes": everything the tracker saw, with boxes, IDs and rejected tracks in grey.
     With a camera-motion registration the output itself is aligned to the calibration
     frame (`stabilize_output`), so the picture and the trails stay still.
@@ -278,7 +291,9 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
     last: dict[int, tuple] = {}               # track -> (frame, point)
     segments: list[tuple] = []                # (frame, p0, p1, colour, thickness), windowed mode
     max_gap = max(1, int(fps * 0.5))
-    dim = float(dv.get("dim", 0.75 if style == "clean" else 1.0))
+    dim = float(dv.get("dim", 1.0))
+    key = ([g for g in cfg.groups if g in set(raw["class"].map(cfg.class_to_group))]
+           if style == "clean" and show_boxes else [])
 
     for f in tqdm(range(f0, f1 + 1), desc="overlay video", unit="frame"):
         ok, img = cap.read()
@@ -305,12 +320,13 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
             for _, a, b, c, t in new:
                 _draw(canvas, alpha, a, b, c, t)
         else:
+            span = max(float(trail_s) * fps, 1.0)
             segments.extend(new)
-            segments = [sg for sg in segments if sg[0] >= f - float(trail_s) * fps]
+            segments = [sg for sg in segments if sg[0] >= f - span]
             canvas[:] = 0
             alpha[:] = 0
-            for _, a, b, c, t in segments:
-                _draw(canvas, alpha, a, b, c, t)
+            for f_s, a, b, c, t in segments:      # oldest first: the newest on top
+                _draw(canvas, alpha, a, b, c, t, 255 * (1 - (f - f_s) / span) ** 0.7)
 
         for r in (blur_rows.get(f).itertuples() if f in blur_rows else ()):
             blur_box(img, r.x1, r.y1, r.x2, r.y2)
@@ -350,11 +366,12 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
                 q = cv2.perspectiveTransform(q, to_out)
             c = (int(q[0, 0, 0]), int(q[0, 0, 1]))
             if style == "clean":
-                if show_boxes and not r.predicted:      # a thin frame in the speed colour
+                if show_boxes and not r.predicted:      # a thin frame in the group colour
                     p1, p2 = _box_in_ref(r, H_f if stable else None)
                     if to_out is not None and not stable:
                         p1, p2 = _box_in_ref(r, None)
-                    cv2.rectangle(img, p1, p2, col, max(1, th - 1), cv2.LINE_AA)
+                    gr, gg, gb = group_rgb(cfg.class_to_group.get(r[2], ""))
+                    cv2.rectangle(img, p1, p2, (gb, gg, gr), max(1, th - 1), cv2.LINE_AA)
                 cv2.circle(img, c, 3 * th, (20, 20, 20), -1, cv2.LINE_AA)
                 cv2.circle(img, c, 2 * th, col, -1, cv2.LINE_AA)
             else:
@@ -372,7 +389,7 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
                                cv2.resize(img, size, interpolation=cv2.INTER_AREA))
         cv2.putText(img, f"t = {f / fps:6.2f} s", (10 * th, 18 * th), cv2.FONT_HERSHEY_SIMPLEX,
                     0.6 * th, (255, 255, 255), max(1, th // 2), cv2.LINE_AA)
-        _legend(img, mode, cfg, th)
+        _legend(img, mode, cfg, th, key)
         if scale < 1:
             img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
         writer.write(img)
