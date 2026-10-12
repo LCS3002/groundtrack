@@ -113,6 +113,13 @@ def test_terrain_survives_save_and_load(tmp_path):
     h2 = Homography.load(tmp_path / "cal.json")
     assert h2.ground_z_m == pytest.approx(h.ground_z_m)
     assert np.abs(h2.to_world(px) - h.to_world(px)).max() < 1e-6
+    # a run's snapshot sits in another folder: the terrain path must still lead to the model
+    from groundtrack.homography import snapshot
+
+    (tmp_path / "runs" / "r1" / "_working").mkdir(parents=True)
+    snap = snapshot(tmp_path / "cal.json", tmp_path / "runs" / "r1" / "_working" / "used.json")
+    h3 = Homography.load(snap)
+    assert np.abs(h3.to_world(px) - h.to_world(px)).max() < 1e-6
 
 
 def test_road_fit_projection_matches_the_calibration_on_terrain():

@@ -198,6 +198,20 @@ class Homography:
         return h_obj
 
 
+def snapshot(src: str | Path, dst: str | Path) -> Path:
+    """Copy a calibration file (e.g. into a run's _working/), keeping its terrain path valid:
+    the path is stored relative to the file, so it is re-based on the new folder."""
+    import json
+
+    src, dst = Path(src), Path(dst)
+    d = json.loads(src.read_text(encoding="utf-8"))
+    t = d.get("terrain")
+    if t and not Path(t).is_absolute():
+        d["terrain"] = _rel(str((src.parent / t).resolve()), dst.parent.resolve())
+    dst.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    return dst
+
+
 def _rel(p: str | None, base: Path) -> str | None:
     if not p:
         return None

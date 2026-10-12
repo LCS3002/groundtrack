@@ -15,7 +15,7 @@ import yaml
 from . import exports, visuals
 from .config import Config
 from .geo import load_geotiff
-from .homography import Homography
+from .homography import Homography, snapshot
 from .layout import Run, open_run
 from .lens import Lens
 from .trajectories import assign_track_classes, process_tracks
@@ -98,7 +98,7 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     h, lens = load_calibration(cfg, video if video.exists() else None)
     # keep the run's calibration snapshot in sync with the one these results are made with
     # (the overlay video projects the results back into the footage with it)
-    shutil.copy2(cfg.path("homography"), run.homography_used)
+    snapshot(cfg.path("homography"), run.homography_used)
     fps, stride = float(meta["fps"]), int(meta["vid_stride"])
 
     reg = load_run_registration(run_dir, h, log)
@@ -385,7 +385,7 @@ def snapshot_inputs(cfg: Config, run_dir: Path) -> None:
         yaml.safe_dump(cfg.data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     hp = cfg.path("homography")
     if hp and hp.exists():
-        shutil.copy2(hp, run.homography_used)
+        snapshot(hp, run.homography_used)
 
 
 def run_all(cfg: Config, device: str, run_name: str | None = None,
