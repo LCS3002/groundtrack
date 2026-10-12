@@ -30,30 +30,28 @@ from .config import Config
 from .geo import GeoRaster
 from .layout import open_run
 
-# occupancy ramp: deep blue -> cyan -> white (light on dark)
-DENSITY_STOPS = [(0.0, (22, 48, 110)), (0.55, (38, 182, 218)), (1.0, (244, 250, 255))]
 INK_VARIANTS = {"light": ((236, 236, 232), (150, 150, 154)),
                 "dark": ((22, 22, 24), (96, 96, 100))}
 
 
-def _ramp(t, stops):
+def density_rgb(t) -> np.ndarray:
+    """Occupancy 0..1 -> RGB 0..255: inferno (dark purple -> orange -> yellow), as the
+    first density plots; low values fade out through the layer's alpha."""
+    import matplotlib
+
     t = np.clip(np.asarray(t, float), 0, 1)
-    xs = [s[0] for s in stops]
-    return np.stack([np.interp(t, xs, [s[1][i] for s in stops]) for i in range(3)], axis=-1)
+    return np.asarray(matplotlib.colormaps["inferno"](0.12 + 0.86 * t))[..., :3] * 255
 
 
-def _additive_to_rgba(layer: np.ndarray) -> np.ndarray:
-    """Additive light layer (float RGB) -> straight-alpha RGBA that looks the same over black."""
-    rgb = np.clip(layer, 0, 255)
-    a = rgb.max(axis=2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        col = np.where(a[..., None] > 0, rgb / a[..., None] * 255, 0)
-    return np.dstack([col, a]).clip(0, 255).astype(np.uint8)
+def coverage_rgb(t) -> np.ndarray:
+    """Seconds in view 0..1 -> RGB 0..255 (viridis: short = purple, long = yellow)."""
+    import matplotlib
+
+    t = np.clip(np.asarray(t, float), 0, 1)
+    return np.asarray(matplotlib.colormaps["viridis"](0.05 + 0.9 * t))[..., :3] * 255
 
 
-def _over(base: np.ndarray, rgba: np.ndarray) -> np.ndarray:
-    a = rgba[..., 3:4].astype(np.float32) / 255
-    return base.astype(np.float32) * (1 - a) + rgba[..., :3].astype(np.float32) * a
+_over = pf.over
 
 
 def _save(img: np.ndarray, path: Path) -> Path:
@@ -65,7 +63,8 @@ def _save(img: np.ndarray, path: Path) -> Path:
 def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
                min_confidence: float = 0.5, min_dominance: float = 0.6,
                line_px: float = 1.6) -> np.ndarray:
-    """Streamlines of the vector field as an additive light layer (float RGB).
+    """Streamlines of the vector field on transparency (straight-alpha RGBA uint8), in the
+    shared speed colours.
 
     Drawn only where the field is well supported (confidence) and coherent (dominance:
     most movement in one direction); where streams cross, lines would invent swirls."""
@@ -73,13 +72,14 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
+    from matplotlib.colors import Normalize
 
+    from .colors import cmap
     from .field import field_to_arrays
 
     W, H = size
     if field.empty:
-        return np.zeros((H, W, 3), np.float32)
+        return np.zeros((H, W, 4), np.uint8)
     xs, ys, U, V, S, C = field_to_arrays(field, cell)
     weak = ~(C >= min_confidence) | ~np.isfinite(U) | ~np.isfinite(V)
     if "dominance" in field:
@@ -90,8 +90,6 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     Um = np.ma.array(np.nan_to_num(U), mask=weak)
     Vm = np.ma.array(np.nan_to_num(V), mask=weak)
     lo, hi = speed_range
-    cmap = LinearSegmentedColormap.from_list(
-        "groundtrack", [(t, np.array(c) / 255) for t, c in pf.STOPS])
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_alpha(0)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -101,17 +99,16 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     ax.set_ylim(ext[2], ext[3])
     pt = 0.72 * line_px                                   # px -> pt at 100 dpi
     if len(xs) > 1 and len(ys) > 1 and (~weak).sum() > 4:
-        ax.streamplot(xs, ys, Um, Vm, color=np.nan_to_num(S), cmap=cmap, norm=Normalize(lo, hi),
-                      linewidth=pt * (0.45 + 0.9 * np.clip(C, 0, 1)),
+        ax.streamplot(xs, ys, Um, Vm, color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi),
+                      linewidth=pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
                       density=float(np.clip(max(W, H) / 1000, 1.2, 4.0)),
                       arrowsize=0.9 * line_px, arrowstyle="-|>", minlength=0.12)
     fig.canvas.draw()
-    rgba = np.asarray(fig.canvas.buffer_rgba(), np.float32).copy()
+    rgba = np.asarray(fig.canvas.buffer_rgba(), np.uint8).copy()
     plt.close(fig)
     if rgba.shape[:2] != (H, W):
         rgba = cv2.resize(rgba, (W, H), interpolation=cv2.INTER_AREA)
-    lit = rgba[..., :3] * (rgba[..., 3:4] / 255)          # premultiplied = light on black
-    return lit + 0.7 * cv2.GaussianBlur(lit, (0, 0), sigmaX=max(2.0, line_px * 2.5))
+    return rgba
 
 
 def density_layer(points: pd.DataFrame, ext, size, dt: float,
@@ -135,8 +132,8 @@ def density_layer(points: pd.DataFrame, ext, size, dt: float,
     t = np.clip(D / dmax, 0, 1) ** 0.45    # gamma, not log: shapes stay crisp, tails stay dark
     t = cv2.resize(np.flipud(t).astype(np.float32), (W, H),      # north up, plan size
                    interpolation=cv2.INTER_CUBIC).clip(0, 1)
-    rgb = _ramp(t, DENSITY_STOPS)
-    a = np.clip(t * 1.4, 0, 0.92) * 255
+    rgb = density_rgb(t)
+    a = np.clip(t * 1.6, 0, 0.88) * 255
     return np.dstack([rgb, a]).astype(np.uint8), dmax
 
 
@@ -276,16 +273,19 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     if L["aerial"] is not None:
         _save(L["aerial"], images / "plan_aerial.png")
     _save(base, images / "plan_map.png")
-    _save(base + L["trails"], images / "plan_tracks.png")
-    _save(_additive_to_rgba(L["trails"]), images / "plan_tracks_layer.png")
+    _save(_over(base, L["trails"]), images / "plan_tracks.png")
+    _save(L["trails"], images / "plan_tracks_layer.png")
     # one field per group (each on its own speed scale), or the single "all" field
     fields = [(run.field_csv(gn), rg) for gn, rg in ranges.items() if len(ranges) > 1
               and run.field_csv(gn).exists()] or [(run.field_csv(), next(iter(ranges.values())))]
     if all(f.exists() for f, _ in fields):
-        flow = sum(flow_layer(pd.read_csv(f), ext, (W, H), float(cfg["field"]["cell_size_m"]),
-                              rg, line_px=1.6 * plan_h / 2000) for f, rg in fields)
-        _save(base + flow, images / "plan_flowfield.png")
-        _save(_additive_to_rgba(flow), images / "plan_flowfield_layer.png")
+        flow = None
+        for f, rg in fields:
+            fl = flow_layer(pd.read_csv(f), ext, (W, H), float(cfg["field"]["cell_size_m"]), rg,
+                            line_px=1.6 * plan_h / 2000)
+            flow = fl if flow is None else pf.stack_rgba(flow, fl)
+        _save(_over(base, flow), images / "plan_flowfield.png")
+        _save(flow, images / "plan_flowfield_layer.png")
     dens, dmax = density_layer(points, ext, (W, H), stride / fps)
     _save(_over(base, dens), images / "plan_density.png")
     _save(dens, images / "plan_density_layer.png")
@@ -297,13 +297,13 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
         insitu = pf.insitu_layers(video, run.root, cfg, fps, int(meta["height"]),
                                   line_px=1.6 * int(meta["height"]) / 1400)
         _save(insitu["frame_rgb"], images / "insitu_frame.png")
-        _save(insitu["base"] + insitu["trails"], images / "insitu_tracks.png")
-        _save(_additive_to_rgba(insitu["trails"]), images / "insitu_tracks_layer.png")
+        _save(_over(insitu["base"], insitu["trails"]), images / "insitu_tracks.png")
+        _save(insitu["trails"], images / "insitu_tracks_layer.png")
     else:
         log(f"images: footage {video} not found, in-situ images skipped")
 
     # ---- labels (one speed legend per group when several are present)
-    den_grad = _ramp(np.linspace(0, 1, 720), DENSITY_STOPS)
+    den_grad = density_rgb(np.linspace(0, 1, 720) ** 0.45)
     px_per_m = W / (ext[1] - ext[0])
     bar_m = pf._nice(ext[1] - ext[0])
     for v in variants:

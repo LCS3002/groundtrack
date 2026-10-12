@@ -501,12 +501,12 @@ _working/           tracker output, camera motion, config + calibration snapshot
 
 | file | contents |
 |---|---|
-| `images/insitu_frame.png`, `insitu_tracks.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, darkened, with every track as a thin light trail |
-| `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour and darkened (the base of the others) |
-| `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | tracks, vector-field streamlines (only where the flow is well supported and one-directional) and occupancy |
+| `images/insitu_frame.png`, `insitu_tracks.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, slightly softened, with every track as a thin trail coloured by speed (blue slow → red fast, the same ramp as the videos and Houdini) |
+| `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour, and softened a little (the base of the others, so the coloured lines read) |
+| `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | tracks (each with a thin dark edge), vector-field streamlines (only where the flow is well supported and one-directional) and occupancy (inferno: purple → yellow) |
 | `images/*_layer.png` | the same drawings alone on transparency, to stack in Photoshop / InDesign / Illustrator. All `plan_*` images and layers share one extent and size |
 | `labels/legend_speed`, `legend_density`, `scale_bar`, `north_arrow` | `_light` (white ink, for dark backgrounds) and `_dark`, transparent. The scale bar is drawn at the plan images' pixel scale: resize the two together. `title.txt` holds the plate text |
-| `<site>_plate.png` | the complete plate. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
+| `<site>_plate.png` | the complete plate, dark type on paper. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
 | `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed with a dot and a thin box (same colour; `debug_video.boxes: false` hides it) at each current position, over a slightly dimmed picture that is aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps only the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
 | `videos/topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
 | `videos/flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
@@ -546,17 +546,20 @@ groundtrack composite sites/trafalgar63*.yaml -o results/trafalgar_composite --t
 
 It writes the same kind of package as a run (`images/` frameless plans and layers, `labels/`,
 `data/`, `houdini/`): all trails, a flow field per group, each clip's view footprint with its
-number, a coverage map (seconds each spot was in view) and **density per second in view**:
-person-seconds per m² divided by the seconds the cell was watched, so a spot two clips filmed is
-not twice as busy and a spot nobody filmed stays blank. The clips are usually filmed one after
+number, a coverage map (seconds each spot was in view) and, per group, **density per second in
+view** (`plan_density_<group>`): e.g. person-seconds per m² divided by the seconds the cell was
+watched, so a spot two clips filmed is not twice as busy and a spot nobody filmed stays blank. A
+view reaches as far as its calibration is trusted (`projection.max_range_m`), at most 150 m or
+10x the camera height. The clips are usually filmed one after
 another, not at once: the composite shows typical movement over the time they cover. Rough
 calibrations (`method_info.grade` in the calibration file) are included unless `--only-ok`.
 
 **Overlapping views.** Where two or more clips see the same ground, their vectors are pooled
 into the composite field (weighted by how much each saw), and also compared: each clip gets its
 own field on one shared grid, and wherever 2+ clips show a clear dominant flow in a cell, the
-directions are compared (`data/overlap_cells.csv`, `images/plan_agreement_layer.png`: cyan
-within 30°, amber 30-90°, red opposite). `data/overlap_pairs.csv` sums it up per pair of clips:
+directions are compared, for each group (people, vehicles) on its own
+(`data/overlap_cells.csv`, `images/plan_agreement_<group>_layer.png`: green within 30°, amber
+30-90°, red opposite). `data/overlap_pairs.csv` sums it up per group and pair of clips:
 a pair that disagrees everywhere it overlaps usually points at one calibration (though two
 moments of a busy square can genuinely move differently).
 

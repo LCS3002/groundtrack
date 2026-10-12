@@ -25,7 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-from scipy.ndimage import binary_closing, binary_fill_holes, gaussian_filter
+from scipy.ndimage import gaussian_filter
 
 from . import portfolio as pf
 from .config import Config
@@ -33,14 +33,15 @@ from .field import smooth_field
 from .geo import GeoRaster
 from .homography import Homography
 from .layout import open_run
-from .package import (DENSITY_STOPS, _additive_to_rgba, _over, _ramp, _save, flow_layer,
-                      legend_png, north_arrow_png, scale_bar_png)
+from .package import (_over, _save, coverage_rgb, density_rgb, flow_layer, legend_png,
+                      north_arrow_png, scale_bar_png)
 from .trajectories import max_range_for
 
 GRID_M = 1.0                 # composite grid cell (coverage, density)
 SMOOTH_M = 1.5               # density smoothing
 MIN_SEEN_S = 5.0             # cells watched for less than this stay blank
-FAR_CAP_M = 150.0            # a footprint never reaches further than this
+FAR_CAP_M = 150.0            # a footprint never reaches further than this ...
+FAR_CAP_PER_HEIGHT = 10.0    # ... or 10x the camera height (a high-rise view sees far)
 
 
 @dataclass
@@ -78,15 +79,20 @@ def footprint(clip: ClipRun, grid) -> np.ndarray:
     g = h.to_world(np.column_stack([uu.ravel(), vv.ravel()]))
     cam = h.camera_params
     d = np.hypot(g[:, 0] - cam["E"], g[:, 1] - cam["N"])
-    rng = min(max_range_for(clip.cfg, h, "people") or FAR_CAP_M, FAR_CAP_M)
+    cap = max(FAR_CAP_M, FAR_CAP_PER_HEIGHT * abs(float(cam.get("height_m") or 0)))
+    groups = (clip.points["group"].unique() if "group" in clip.points else None)
+    groups = list(groups) if groups is not None and len(groups) else ["people"]
+    ranges = [max_range_for(clip.cfg, h, g) or cap for g in groups]
+    rng = min(max(ranges), cap)
     ok = np.isfinite(d) & (d <= rng)
-    m = np.zeros((ny, nx), bool)
-    i = np.floor((g[ok, 0] - x0) / GRID_M).astype(int)
-    j = np.floor((g[ok, 1] - y0) / GRID_M).astype(int)
-    inside = (i >= 0) & (i < nx) & (j >= 0) & (j < ny)
-    m[j[inside], i[inside]] = True
-    # the samples thin out with distance: close the gaps, but never past the range
-    m = binary_fill_holes(binary_closing(m, np.ones((7, 7), bool), iterations=2))
+    m = np.zeros((ny, nx), np.uint8)
+    if ok.sum() >= 3:
+        # the ground a camera sees of a plane is convex (the picture's rectangle through a
+        # homography, cut by the range circle): fill the hull of the samples, which thin out
+        # with distance, instead of leaving rows of dots far away
+        q = np.column_stack([(g[ok, 0] - x0) / GRID_M, (g[ok, 1] - y0) / GRID_M])
+        cv2.fillConvexPoly(m, cv2.convexHull(np.round(q).astype(np.int32)), 1)
+    m = m.astype(bool)
     cx, cy = (cam["E"] - x0) / GRID_M, (cam["N"] - y0) / GRID_M
     jj, ii = np.mgrid[0:ny, 0:nx]
     return m & (np.hypot(ii + 0.5 - cx, jj + 0.5 - cy) * GRID_M <= rng)
@@ -96,20 +102,21 @@ AGREE_DEG = 30.0             # flows within this angle count as agreeing
 
 
 def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext, size,
-                      images: Path, data: Path, log=print) -> dict:
-    """Compare the clips' own people flow fields where their views overlap.
+                      images: Path, group: str = "people", log=print
+                      ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """Compare the clips' own flow fields of one group where their views overlap.
 
     Each clip gets its field on one shared grid; a cell counts where two or more clips have
     a well-supported, clearly directional flow there (confidence >= 0.5, dominance >= 0.6).
-    Writes overlap_cells.csv (per cell: clips, combined vector, direction spread), and
-    overlap_pairs.csv (per pair of clips: shared cells, median angle and speed ratio) - a pair
-    that disagrees everywhere it overlaps points at a calibration, though different moments
-    can also move differently. plan_agreement_layer.png colours the cells."""
+    Returns (cells: clips, combined vector, direction spread per cell; pairs: shared cells,
+    median angle and speed ratio per pair of clips) - a pair that disagrees everywhere it
+    overlaps points at a calibration, though different moments can also move differently.
+    plan_agreement_<group>_layer.png colours the cells."""
     cell = float(cfg["field"]["cell_size_m"])
     sm = float(cfg["field"]["smooth_m"])
-    people = pts[(pts["group"] == "people") & ~pts["predicted"].astype(bool)]
+    people = pts[(pts["group"] == group) & ~pts["predicted"].astype(bool)]
     if people.empty:
-        return {}
+        return None
     x, y = people["x"].to_numpy(), people["y"].to_numpy()
     bounds = (int(np.floor((x.min() - 3 * sm) / cell)), int(np.floor((x.max() + 3 * sm) / cell)),
               int(np.floor((y.min() - 3 * sm) / cell)), int(np.floor((y.max() + 3 * sm) / cell)))
@@ -122,7 +129,7 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
         f = f[(f["confidence"] >= 0.5) & (f["dominance"] >= 0.6)]
         per[c.name] = f.set_index(["i", "j"])[["vx", "vy", "speed", "weight"]]
     if len(per) < 2:
-        return {}
+        return None
     allf = pd.concat(per, names=["clip"]).reset_index()
     rows, pairs = [], {}
     for (i, j), g in allf.groupby(["i", "j"]):
@@ -148,32 +155,31 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
                                                   if key[0] == ra["clip"] else
                                                   rb["speed"] / max(ra["speed"], 1e-6)))
     if not rows:
-        log("  overlap: no cell where two clips both show a clear flow")
-        return {}
+        log(f"  overlap ({group}): no cell where two clips both show a clear flow")
+        return None
     cells = pd.DataFrame(rows)
-    cells.to_csv(data / "overlap_cells.csv", index=False)
-    pr = pd.DataFrame([{"clip_a": a, "clip_b": b, "shared_cells": len(v),
+    cells.insert(0, "group", group)
+    pr = pd.DataFrame([{"group": group, "clip_a": a, "clip_b": b, "shared_cells": len(v),
                         "median_angle_deg": round(float(np.median([d for d, _ in v])), 1),
                         "agree_share": round(float(np.mean([d <= AGREE_DEG for d, _ in v])), 2),
                         "median_speed_ratio": round(float(np.median([s for _, s in v])), 2)}
                        for (a, b), v in pairs.items()]).sort_values("shared_cells", ascending=False)
-    pr.to_csv(data / "overlap_pairs.csv", index=False)
-    # agreement layer: cyan = agree, amber = 30-90 deg apart, red = opposite
+    # agreement layer: green = agree, amber = 30-90 deg apart, red = opposite
     W, H = size
     x0, x1, y0, y1 = ext
     layer = np.zeros((H, W, 4), np.uint8)
     half = max(1, int(round(cell / (x1 - x0) * W / 2)))
     for r in cells.itertuples():
-        col = ((38, 182, 218) if r.direction_spread_deg <= AGREE_DEG else
-               (240, 180, 60) if r.direction_spread_deg <= 90 else (230, 70, 60))
+        col = ((40, 160, 70) if r.direction_spread_deg <= AGREE_DEG else
+               (240, 170, 40) if r.direction_spread_deg <= 90 else (215, 48, 39))
         cx = int((r.x - x0) / (x1 - x0) * W)
         cy = int((y1 - r.y) / (y1 - y0) * H)
         layer[max(0, cy - half):cy + half, max(0, cx - half):cx + half] = (*col, 200)
-    _save(layer, images / "plan_agreement_layer.png")
+    _save(layer, images / f"plan_agreement_{group}_layer.png")
     share = float((cells["direction_spread_deg"] <= AGREE_DEG).mean())
-    log(f"  overlap: {len(cells)} cells seen by 2+ clips with a clear flow; "
+    log(f"  overlap ({group}): {len(cells)} cells seen by 2+ clips with a clear flow; "
         f"{share:.0%} agree within {AGREE_DEG:.0f} deg")
-    return {"cells": len(cells), "agree_share": round(share, 2)}
+    return cells, pr
 
 
 def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Path,
@@ -205,8 +211,8 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     if L["aerial"] is not None:
         _save(L["aerial"], images / "plan_aerial.png")
     _save(base, images / "plan_map.png")
-    _save(base + L["trails"], images / "plan_tracks.png")
-    _save(_additive_to_rgba(L["trails"]), images / "plan_tracks_layer.png")
+    _save(_over(base, L["trails"]), images / "plan_tracks.png")
+    _save(L["trails"], images / "plan_tracks_layer.png")
 
     # ---- flow field per group (each on its own speed scale)
     fc = float(cfg["field"]["cell_size_m"])
@@ -217,12 +223,15 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         fld = smooth_field(g, fc, float(cfg["field"]["smooth_m"]), float(g["dt"].median()))
         fld.to_csv(data / f"field_grid_{gname}.csv", index=False)
         fl = flow_layer(fld, ext, (W, H), fc, rg, line_px=1.5 * plan_height_px / 2000)
-        _save(base + fl, images / f"plan_flowfield_{gname}.png")
-        _save(_additive_to_rgba(fl), images / f"plan_flowfield_{gname}_layer.png")
+        _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
+        _save(fl, images / f"plan_flowfield_{gname}_layer.png")
 
-    # ---- where views overlap: do the clips agree on the movement?
-    if "people" in ranges:
-        overlap_agreement(clips, pts, cfg, ext, (W, H), images, data, log)
+    # ---- where views overlap: do the clips agree on the movement? (per group)
+    found = [r for r in (overlap_agreement(clips, pts, cfg, ext, (W, H), images, g, log)
+                         for g in ranges) if r is not None]
+    if found:
+        pd.concat([c for c, _ in found]).to_csv(data / "overlap_cells.csv", index=False)
+        pd.concat([p for _, p in found]).to_csv(data / "overlap_pairs.csv", index=False)
 
     # ---- coverage (seconds in view) and density per observed second, on a 1 m grid
     x0, x1, y0, y1 = ext
@@ -234,31 +243,37 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         m = footprint(c, grid)
         fp[c.name] = m
         seen += m * c.duration_s
-    people = pts[(pts["group"] == "people") & ~pts["predicted"].astype(bool)]
-    i = np.floor((people["x"].to_numpy() - x0) / GRID_M).astype(int)
-    j = np.floor((people["y"].to_numpy() - y0) / GRID_M).astype(int)
-    ok = (i >= 0) & (i < nx) & (j >= 0) & (j < ny)
-    occ = np.zeros((ny, nx))
-    np.add.at(occ, (j[ok], i[ok]), people["dt"].to_numpy()[ok])          # person-seconds
     s = SMOOTH_M / GRID_M
-    dens = np.where(gaussian_filter(seen, s) >= MIN_SEEN_S,
-                    gaussian_filter(occ, s) / np.maximum(gaussian_filter(seen, s), 1e-9)
-                    / (GRID_M * GRID_M), np.nan)                          # people per m^2
-    dmax = float(np.nanpercentile(dens, 99.5)) if np.isfinite(dens).any() else 0.0
 
     def to_plan(a):                                   # grid (north = last row) -> plan pixels
         return cv2.resize(np.flipud(a).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
 
-    t = np.clip(np.nan_to_num(dens / max(dmax, 1e-9)), 0, 1) ** 0.5
-    tp = to_plan(t).clip(0, 1)
     seen_p = to_plan((seen >= MIN_SEEN_S).astype(float)) > 0.5
-    dl = np.dstack([_ramp(tp, DENSITY_STOPS), np.where(seen_p, np.clip(tp * 1.4 + 0.08, 0, 0.92)
-                                                       * 255, 0)]).astype(np.uint8)
-    _save(_over(base, dl), images / "plan_density.png")
-    _save(dl, images / "plan_density_layer.png")
+    dens, dmax = {}, {}
+    for gname in ranges:
+        g = pts[(pts["group"] == gname) & ~pts["predicted"].astype(bool)]
+        if g.empty:
+            continue
+        i = np.floor((g["x"].to_numpy() - x0) / GRID_M).astype(int)
+        j = np.floor((g["y"].to_numpy() - y0) / GRID_M).astype(int)
+        ok = (i >= 0) & (i < nx) & (j >= 0) & (j < ny)
+        occ = np.zeros((ny, nx))
+        np.add.at(occ, (j[ok], i[ok]), g["dt"].to_numpy()[ok])          # e.g. person-seconds
+        d = np.where(gaussian_filter(seen, s) >= MIN_SEEN_S,
+                     gaussian_filter(occ, s) / np.maximum(gaussian_filter(seen, s), 1e-9)
+                     / (GRID_M * GRID_M), np.nan)                        # e.g. people per m^2
+        dens[gname] = d
+        dmax[gname] = float(np.nanpercentile(d, 99.5)) if np.isfinite(d).any() else 0.0
+        t = np.clip(np.nan_to_num(d / max(dmax[gname], 1e-9)), 0, 1) ** 0.5
+        tp = to_plan(t).clip(0, 1)
+        dl = np.dstack([density_rgb(tp),
+                        np.where(seen_p, np.clip(tp * 1.6 + 0.06, 0, 0.88) * 255, 0)]
+                       ).astype(np.uint8)
+        _save(_over(base, dl), images / f"plan_density_{gname}.png")
+        _save(dl, images / f"plan_density_{gname}_layer.png")
     smax = float(seen.max())
     tc = to_plan(np.sqrt(seen / max(smax, 1e-9))).clip(0, 1)
-    cl = np.dstack([_ramp(tc, DENSITY_STOPS), np.where(tc > 0.01, 200, 0)]).astype(np.uint8)
+    cl = np.dstack([coverage_rgb(tc), np.where(tc > 0.01, 170, 0)]).astype(np.uint8)
     _save(_over(base, cl), images / "plan_coverage.png")
     _save(cl, images / "plan_coverage_layer.png")
     # outlines of every clip's view, with its number (labels kept apart from the image)
@@ -267,13 +282,16 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     for k, (name, m) in enumerate(fp.items(), start=1):
         mp = (to_plan(m.astype(float)) > 0.5).astype(np.uint8)
         cs, _ = cv2.findContours(mp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(fl_img, cs, -1, (235, 235, 230, 220), max(2, int(lw * 1.5)), cv2.LINE_AA)
+        cv2.drawContours(fl_img, cs, -1, (*pf.INK, 220), max(2, int(lw * 1.5)), cv2.LINE_AA)
         cam = clips[k - 1].homography.camera_params
         q = (int((cam["E"] - x0) / (x1 - x0) * W), int((y1 - cam["N"]) / (y1 - y0) * H))
-        cv2.circle(num_img, q, int(6 * lw), (255, 255, 255, 255), -1, cv2.LINE_AA)
-        cv2.putText(num_img, str(k), (q[0] + int(9 * lw), q[1] + int(6 * lw)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9 * lw, (255, 255, 255, 255), max(1, int(lw)),
-                    cv2.LINE_AA)
+        tq = (q[0] + int(9 * lw), q[1] + int(6 * lw))
+        cv2.circle(num_img, q, int(8 * lw), (255, 255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(num_img, q, int(6 * lw), (*pf.INK, 255), -1, cv2.LINE_AA)
+        for col, th in (((255, 255, 255, 255), max(3, int(4 * lw))), ((*pf.INK, 255),
+                                                                       max(1, int(lw)))):
+            cv2.putText(num_img, str(k), tq, cv2.FONT_HERSHEY_SIMPLEX, 0.9 * lw, col, th,
+                        cv2.LINE_AA)
     _save(fl_img, images / "plan_footprints_layer.png")
     _save(num_img, labels / "camera_numbers_layer.png")
 
@@ -282,11 +300,13 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         for gname, (lo, hi) in ranges.items():
             legend_png(labels / f"legend_speed_{gname}_{v}.png", f"SPEED  ·  {gname.upper()}",
                        f"{lo:g}", f"{hi:g} m/s", pf.speed_rgb(np.linspace(lo, hi, 720), lo, hi), v)
-        grad = _ramp(np.linspace(0, 1, 720), DENSITY_STOPS)
-        legend_png(labels / f"legend_density_{v}.png", "PEOPLE PER 100 m²  ·  WHILE IN VIEW", "0",
-                   f"{dmax * 100:.2g}", grad, v)
+        u = np.linspace(0, 1, 720)
+        for gname, dm in dmax.items():
+            legend_png(labels / f"legend_density_{gname}_{v}.png",
+                       f"{gname.upper()} PER 100 m²  ·  WHILE IN VIEW", "0", f"{dm * 100:.2g}",
+                       density_rgb(u ** 0.5), v)
         legend_png(labels / f"legend_coverage_{v}.png", "SECONDS IN VIEW", "0", f"{smax:.0f} s",
-                   grad, v)
+                   coverage_rgb(u ** 0.5), v)
         scale_bar_png(labels / f"scale_bar_{v}.png", pf._nice(x1 - x0), W / (x1 - x0), v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
     (labels / "title.txt").write_text("\n".join(x for x in (title, subtitle, credit and
@@ -310,7 +330,7 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     jj, ii = np.nonzero(seen > 0)
     pd.DataFrame({"x": x0 + (ii + 0.5) * GRID_M, "y": y0 + (jj + 0.5) * GRID_M,
                   "seconds_in_view": seen[jj, ii].round(1),
-                  "people_per_m2": np.round(dens[jj, ii], 4)}).to_csv(
+                  **{f"{g}_per_m2": np.round(d[jj, ii], 4) for g, d in dens.items()}}).to_csv(
         data / "coverage_density_grid.csv", index=False)
     pl = pts[~pts["predicted"].astype(bool)]
     metrics = [("clips", "Clips", len(clips), ""),

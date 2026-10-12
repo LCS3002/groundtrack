@@ -62,8 +62,8 @@ def test_each_group_on_its_own_scale(mixed_run):
     info = json.loads(run.metrics_json.read_text())
     assert info["speed_range_m_s"] == {"people": [0.0, 2.5], "vehicles": [0.0, 35.0]}
 
-    # cars at 15 m/s on the vehicle scale (0-35) are cyan, not "fastest" amber as they would
-    # be on the people scale (0-2.5)
+    # cars at 15 m/s on the vehicle scale (0-35) take that scale's colour, not the "fastest"
+    # red they would have on the people scale (0-2.5)
     layer = np.asarray(Image.open(run.images / "plan_tracks_layer.png"), float)
     ext = plan_extent(pts)
     W, H = plan_size(ext, 600)
@@ -71,9 +71,10 @@ def test_each_group_on_its_own_scale(mixed_run):
     band = layer[row - 1:row + 2]
     lit = band[band[..., 3] > 128]
     assert len(lit) > 10
-    r, b = lit[:, 0].mean(), lit[:, 2].mean()
-    want = speed_rgb(15.0, 0, 35)
-    assert b > r and want[2] > want[0]
+    hue = lambda c: np.asarray(c, float) / max(np.max(c), 1e-9)  # noqa: E731  (casing darkens)
+    got = hue(lit[:, :3].mean(axis=0))
+    want, fastest = hue(speed_rgb(15.0, 0, 35)), hue(speed_rgb(2.5, 0, 2.5))
+    assert np.abs(got - want).max() < 0.1 < np.abs(got - fastest).max()
 
 
 def test_flowfield_video_with_two_fields(mixed_run, tmp_path):

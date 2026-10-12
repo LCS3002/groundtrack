@@ -42,8 +42,8 @@ def test_composite_normalises_density_by_time_in_view(tmp_path):
     out = build_composite(clips, None, tmp_path / "composite", "Test plaza",
                           plan_height_px=600, log=lambda *x: None)
     for f in ("images/plan_tracks.png", "images/plan_tracks_layer.png",
-              "images/plan_density_layer.png", "images/plan_coverage_layer.png",
-              "images/plan_flowfield_people.png", "labels/legend_density_light.png",
+              "images/plan_density_people_layer.png", "images/plan_coverage_layer.png",
+              "images/plan_flowfield_people.png", "labels/legend_density_people_light.png",
               "labels/camera_numbers.txt", "data/points_all.csv", "data/clips.csv",
               "houdini/houdini_import.py"):
         assert (out / f).exists(), f
@@ -62,4 +62,4 @@ def test_composite_normalises_density_by_time_in_view(tmp_path):
     # both clips see the same eastward walkers: where they overlap, they agree
     pairs = pd.read_csv(out / "data/overlap_pairs.csv")
     assert pairs["shared_cells"].iloc[0] > 0 and pairs["agree_share"].iloc[0] == 1.0
-    assert (out / "images/plan_agreement_layer.png").exists()
+    assert (out / "images/plan_agreement_people_layer.png").exists()

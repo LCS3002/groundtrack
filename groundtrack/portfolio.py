@@ -1,9 +1,10 @@
-"""Portfolio plates: a minimal, dark diptych per clip.
+"""Portfolio plates: a minimal diptych per clip, in colour on paper.
 
-Left  IN SITU: the mid-clip frame (desaturated, darkened, people blurred) with every track of
-      the clip as a thin glowing light trail, drawn where the camera saw it.
-Right PLAN:    the aerial map (dark) with the same tracks in metres, EPSG:27700.
+Left  IN SITU: the mid-clip frame (colour, slightly softened, people blurred) with every track
+      of the clip as a thin trail in the speed colours, drawn where the camera saw it.
+Right PLAN:    the colour aerial (softened) with the same tracks in metres, EPSG:27700.
 Below: a row of key figures and a hairline speed legend. Typeset in Bahnschrift Light.
+Speed colours are the shared turbo ramp of colors.py (blue slow -> red fast).
 """
 
 from __future__ import annotations
@@ -16,17 +17,18 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
+from .colors import cmap
 from .config import Config
 from .geo import GeoRaster
 from .layout import open_run
 
-BG = (11, 11, 12)
-INK = (236, 236, 232)
-GREY = (138, 138, 142)
-HAIR = (58, 58, 62)
-# slow -> fast: deep blue, cyan, white, amber (stays legible as light on black)
-STOPS = [(0.0, (52, 92, 178)), (0.35, (38, 182, 218)), (0.72, (232, 246, 252)),
-         (1.0, (255, 168, 64))]
+BG = (247, 246, 242)          # paper
+INK = (29, 29, 31)
+GREY = (112, 112, 118)
+HAIR = (206, 206, 210)
+CASING = (20, 20, 22)         # thin dark edge under every trail: reads on light and dark ground
+SOFTEN_PLAN = (0.8, 0.12)     # aerial: keep 80% of the saturation, lift 12% toward white
+SOFTEN_INSITU = (0.9, 0.06)
 FONT_FILES = [r"C:\Windows\Fonts\bahnschrift.ttf", "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
 
@@ -41,9 +43,9 @@ def group_ranges(cfg: Config, points: pd.DataFrame) -> dict:
 
 
 def speed_rgb(v, lo, hi) -> np.ndarray:
+    """Speed -> RGB 0..255 on the shared ramp (same colours as the videos and Houdini)."""
     t = np.clip((np.asarray(v, float) - lo) / max(hi - lo, 1e-9), 0, 1)
-    xs = [s[0] for s in STOPS]
-    return np.stack([np.interp(t, xs, [s[1][i] for s in STOPS]) for i in range(3)], axis=-1)
+    return np.asarray(cmap()(t))[..., :3] * 255
 
 
 def _font(size: int, weight: str = "Light"):
@@ -72,27 +74,56 @@ def _text(draw, xy, text, size, weight="Light", fill=INK, tracking=0.0):
     return x - start
 
 
-def _glow_lines(shape, segments, width: float, ss: int | None = None, glow: float = 0.9):
-    """Additive light-trail layer from [(p0, p1, rgb), ...] in output pixels."""
+def _trail_layer(shape, segments, width: float, ss: int | None = None,
+                 casing: float = 0.3) -> np.ndarray:
+    """Trails from [(p0, p1, rgb), ...] in output pixels, on transparency (straight-alpha
+    RGBA uint8), each with a thin dark casing (opacity `casing`) so it reads on any ground."""
     h, w = shape
     if ss is None:  # supersample small images; big ones are fine with antialiased lines
         ss = 2 if h * w <= 6_000_000 else 1
-    layer = np.zeros((h * ss, w * ss, 3), np.float32)
+    col = np.zeros((h * ss, w * ss, 3), np.float32)       # colour x coverage
+    cov = np.zeros((h * ss, w * ss), np.float32)
+    case = np.zeros((h * ss, w * ss), np.float32)
     lw = max(1, int(round(width * ss)))
     for p0, p1, c in segments:
         a = (int(round(p0[0] * ss)), int(round(p0[1] * ss)))
         b = (int(round(p1[0] * ss)), int(round(p1[1] * ss)))
-        cv2.line(layer, a, b, (float(c[0]), float(c[1]), float(c[2])), lw, cv2.LINE_AA)
+        cv2.line(case, a, b, 1.0, lw + 2 * ss, cv2.LINE_AA)
+        cv2.line(col, a, b, (float(c[0]), float(c[1]), float(c[2])), lw, cv2.LINE_AA)
+        cv2.line(cov, a, b, 1.0, lw, cv2.LINE_AA)
     if ss > 1:
-        layer = cv2.resize(layer, (w, h), interpolation=cv2.INTER_AREA)
-    halo = cv2.GaussianBlur(layer, (0, 0), sigmaX=max(2.0, width * 3))
-    return layer + glow * halo
+        col, cov, case = (cv2.resize(x, (w, h), interpolation=cv2.INTER_AREA)
+                          for x in (col, cov, case))
+    cov = np.clip(cov, 0, 1)[..., None]
+    ca = (casing * np.clip(case, 0, 1))[..., None] * (1 - cov)
+    a = cov + ca
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rgb = np.where(a > 0, (col + np.array(CASING, np.float32) * ca) / a, 0)
+    return np.dstack([rgb, a * 255]).clip(0, 255).astype(np.uint8)
 
 
-def _darken(rgb: np.ndarray, level: float) -> np.ndarray:
-    g = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
-    g = np.clip((g - 0.5) * 1.15 + 0.5, 0, 1) * level        # a touch of contrast, then dim
-    return np.repeat((g * 255)[..., None], 3, axis=2)
+def _soften(rgb: np.ndarray, saturation: float, lift: float) -> np.ndarray:
+    """A colour image a little desaturated and lifted toward white, so coloured lines read."""
+    f = rgb.astype(np.float32)
+    g = f @ np.array([0.299, 0.587, 0.114], np.float32)
+    f = g[..., None] + saturation * (f - g[..., None])
+    return f * (1 - lift) + 255 * lift
+
+
+def over(base: np.ndarray, rgba: np.ndarray) -> np.ndarray:
+    """A straight-alpha RGBA layer over an RGB image (float result)."""
+    a = rgba[..., 3:4].astype(np.float32) / 255
+    return base.astype(np.float32) * (1 - a) + rgba[..., :3].astype(np.float32) * a
+
+
+def stack_rgba(bottom: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """Two straight-alpha RGBA layers into one (top over bottom)."""
+    at = top[..., 3:4].astype(np.float32) / 255
+    ab = bottom[..., 3:4].astype(np.float32) / 255
+    a = at + ab * (1 - at)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rgb = np.where(a > 0, (top[..., :3] * at + bottom[..., :3] * ab * (1 - at)) / a, 0)
+    return np.dstack([rgb, a * 255]).clip(0, 255).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------- panels
@@ -149,15 +180,16 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     rgb = cv2.cvtColor(cv2.resize(img, (int(round(W * s)), out_h), interpolation=cv2.INTER_AREA),
                        cv2.COLOR_BGR2RGB)
     stride = max(1, int(np.median(np.diff(np.sort(raw["frame"].unique())))))
-    trails = _glow_lines(rgb.shape[:2], _segments_from(paths, lo_, hi_, 3 * stride), line_px)
-    return {"frame_rgb": rgb, "base": _darken(rgb, 0.42), "trails": trails,
+    trails = _trail_layer(rgb.shape[:2], _segments_from(paths, lo_, hi_, 3 * stride), line_px)
+    return {"frame_rgb": rgb, "base": _soften(rgb, *SOFTEN_INSITU), "trails": trails,
             "speed_range": (lo_, hi_), "frame": frame}
 
 
 def insitu_panel(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: int,
                  frame: int | None = None, line_px: float = 1.6):
     L = insitu_layers(video, run_dir, cfg, fps, out_h, frame, line_px)
-    return np.clip(L["base"] + L["trails"], 0, 255).astype(np.uint8), L["speed_range"], L["frame"]
+    return np.clip(over(L["base"], L["trails"]), 0, 255).astype(np.uint8), L["speed_range"], \
+        L["frame"]
 
 
 def _segments_from(paths, lo, hi, max_gap):
@@ -203,7 +235,7 @@ def aerial_rgb(raster: GeoRaster, ext, out_w: int, out_h: int) -> np.ndarray:
         src = cv2.GaussianBlur(src, (0, 0), sigmaX=0.4 * sx, sigmaY=0.4 * sy)
     M = np.array([[sx, 0, c0], [0, sy, r0]], np.float32)
     img = cv2.warpAffine(src, M, (out_w, out_h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                         borderMode=cv2.BORDER_CONSTANT, borderValue=BG)   # paper past its edge
     if img.ndim == 2:
         img = np.repeat(img[..., None], 3, axis=2)
     return img[..., :3].astype(np.uint8)
@@ -215,7 +247,7 @@ def plan_size(ext, out_h: int) -> tuple[int, int]:
 
 def plan_layers(points: pd.DataFrame, raster: GeoRaster | None, ext, out_h: int, speed_range,
                 line_px: float = 1.3) -> dict:
-    """Plan layers at out_h: aerial (RGB or None), base (darkened, float), trails (float).
+    """Plan layers at out_h: aerial (RGB or None), base (softened aerial, float), trails (RGBA).
 
     speed_range: (lo, hi) for every track, or {group: (lo, hi)} to colour each track on its
     own group's scale (people and vehicles in one clip)."""
@@ -224,7 +256,7 @@ def plan_layers(points: pd.DataFrame, raster: GeoRaster | None, ext, out_h: int,
     aerial = None
     if raster is not None:
         aerial = aerial_rgb(raster, ext, out_w, out_h)
-        base = _darken(aerial, 0.34)
+        base = _soften(aerial, *SOFTEN_PLAN)
     else:
         base = np.full((out_h, out_w, 3), BG, np.float32)
     sx, sy = out_w / (x1 - x0), out_h / (y1 - y0)
@@ -236,7 +268,7 @@ def plan_layers(points: pd.DataFrame, raster: GeoRaster | None, ext, out_h: int,
         rng = ranges.get(t["group"].iloc[0], default) if ranges else default
         paths.append((xy, t["speed"].to_numpy(), t["frame"].to_numpy(), *rng))
     stride = max(1, int(np.median(np.diff(np.sort(points["frame"].unique())))))
-    trails = _glow_lines((out_h, out_w), _segments_from(paths, *default, 3 * stride), line_px)
+    trails = _trail_layer((out_h, out_w), _segments_from(paths, *default, 3 * stride), line_px)
     return {"aerial": aerial, "base": base, "trails": trails}
 
 
@@ -245,7 +277,7 @@ def plan_panel(points: pd.DataFrame, raster: GeoRaster | None, cfg: Config, out_
                ext=None):
     ext = ext or plan_extent(points, margin_frac, aspect)
     L = plan_layers(points, raster, ext, out_h, speed_range, line_px)
-    return np.clip(L["base"] + L["trails"], 0, 255).astype(np.uint8), ext
+    return np.clip(over(L["base"], L["trails"]), 0, 255).astype(np.uint8), ext
 
 
 def _compass(yaw_deg: float) -> str:
