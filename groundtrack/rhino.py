@@ -354,7 +354,10 @@ for tid in sorted(TRACKS):
         a = bisect.bisect_left(d["t"], float(t) - float(tail)) if tail is not None else 0
         sel = s[a:bisect.bisect_right(d["t"], float(t))]
     if len(sel) >= 2:
-        tracks.append(rg.PolylineCurve([rg.Point3d(q[1] * U, q[2] * U, q[3] * U) for q in sel]))
+        pl = rg.Polyline()        # (RhinoCommon takes no Python list here: add point by point)
+        for q in sel:
+            pl.Add(q[1] * U, q[2] * U, q[3] * U)
+        tracks.append(rg.PolylineCurve(pl))
         ms = sum(q[6] for q in sel) / len(sel)
         track_colour.append(_colour(ms, d["group"]))
         track_info.append("%d %s %s %.2f %s" % (tid, d["group"], d["class"], ms, d["clip"]))
@@ -371,7 +374,10 @@ for tid in sorted(TRACKS):
         speeds.append(q[6])
         colours.append(_colour(q[6], d["group"]))
 
-fname = str(_in("field", "all" if "all" in FIELD_FILES else next(iter(FIELD_FILES), "")))
+DEFAULT_FIELD = "all" if "all" in FIELD_FILES else next(iter(FIELD_FILES), "")
+fname = str(_in("field", DEFAULT_FIELD))
+if fname not in FIELD_FILES:      # not exported for this run: use the default field
+    fname = DEFAULT_FIELD
 field_points, field_vectors, field_speed, field_confidence, field_colour = [], [], [], [], []
 if fname in FIELD_FILES and os.path.exists(FIELD_FILES[fname]):
     mc = float(_in("min_confidence", 0.5))

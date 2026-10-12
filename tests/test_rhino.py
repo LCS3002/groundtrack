@@ -31,9 +31,17 @@ def _rhino_stubs():
         def __init__(self, *a):
             self.xyz = a
 
+    class Polyline:
+        def __init__(self):
+            self.pts = []
+
+        def Add(self, x, y, z):  # noqa: N802  (RhinoCommon name)
+            self.pts.append(P(x, y, z))
+
     class Curve:
-        def __init__(self, pts):
-            self.pts = list(pts)
+        def __init__(self, polyline):
+            assert isinstance(polyline, Polyline)      # RhinoCommon takes no Python list
+            self.pts = list(polyline.pts)
 
     class Color:
         @staticmethod
@@ -42,7 +50,7 @@ def _rhino_stubs():
 
     rhino = types.ModuleType("Rhino")
     geom = types.ModuleType("Rhino.Geometry")
-    geom.Point3d, geom.Vector3d, geom.PolylineCurve = P, P, Curve
+    geom.Point3d, geom.Vector3d, geom.PolylineCurve, geom.Polyline = P, P, Curve, Polyline
     rhino.Geometry = geom
     sc = types.ModuleType("scriptcontext")
     sc.sticky = {}
@@ -97,3 +105,18 @@ def test_3dm_layers_and_attributes(tmp_path):
     assert float(car.Attributes.GetUserString("mean_speed")) == pytest.approx(9.0)
     bb = car.Geometry.GetBoundingBox()
     assert bb.Min.Y == pytest.approx(6.0) and bb.Min.Z == pytest.approx(2.2)
+
+
+def test_grasshopper_unknown_field_falls_back_to_the_default(tmp_path, monkeypatch):
+    pts = _points()
+    pts.to_csv(tmp_path / "points.csv", index=False)
+    smooth_field(pts[pts["group"] == "people"], 1.0, 2.0, DT).to_csv(
+        tmp_path / "vector_field_people.csv", index=False)
+    script = write_grasshopper_script(tmp_path / "gh.py", tmp_path / "points.csv",
+                                      {"people": tmp_path / "vector_field_people.csv"},
+                                      (E0, N0), 10.0, default_config(), 1.0, 7.8)
+    for k, v in _rhino_stubs().items():
+        monkeypatch.setitem(sys.modules, k, v)
+    g = {"__name__": "__main__", "field": "people_continuous"}       # only composites have it
+    exec(compile(script.read_text(encoding="utf-8"), str(script), "exec"), g)
+    assert len(g["field_points"]) > 0
