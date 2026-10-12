@@ -98,11 +98,15 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     ax.set_xlim(ext[0], ext[1])
     ax.set_ylim(ext[2], ext[3])
     pt = 0.72 * line_px                                   # px -> pt at 100 dpi
+    span = max(ext[1] - ext[0], ext[3] - ext[2])
+    # streamplot works in fractions of the plot: keep lines >= 6 m and ~3 m apart in any extent
+    density = float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0))
+    minlength = float(np.clip(6.0 / max(span, 1e-6), 0.01, 0.12))
     if len(xs) > 1 and len(ys) > 1 and (~weak).sum() > 4:
         ax.streamplot(xs, ys, Um, Vm, color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi),
                       linewidth=pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
-                      density=float(np.clip(max(W, H) / 1000, 1.2, 4.0)),
-                      arrowsize=0.9 * line_px, arrowstyle="-|>", minlength=0.12)
+                      density=density, arrowsize=0.9 * line_px, arrowstyle="-|>",
+                      minlength=minlength)
     fig.canvas.draw()
     rgba = np.asarray(fig.canvas.buffer_rgba(), np.uint8).copy()
     plt.close(fig)
