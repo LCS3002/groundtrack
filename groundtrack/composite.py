@@ -34,10 +34,9 @@ from .field import smooth_field
 from .geo import GeoRaster
 from .homography import Homography
 from .layout import open_run
-from .package import (_over, _save, coverage_rgb, density_rgb, flow_layer, group_key_png,
-                      legend_png,
+from . import original as og
+from .package import (_over, _save, coverage_rgb, legend_png, swatch_key_png,
                       north_arrow_png, scale_bar_png)
-from .colors import group_rgb
 from .trajectories import max_range_for
 
 GRID_M = 1.0                 # composite grid cell (coverage, density)
@@ -251,6 +250,46 @@ def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.
     return out
 
 
+WEB_WHITE = (255, 255, 255)
+WEB_FAR = (255, 40, 200)
+
+
+def web_diagram(pts: pd.DataFrame, raster, ext, size) -> dict:
+    """The white + pink diagram. White: every person kept within the precise range, joined by
+    track number across all clips in clip order (each clip numbers its tracks from 1, so the
+    lines run on from one clip's person to the next clip's person with the same number: a web
+    over the site, a graphic rather than paths). Magenta: every person beyond the precise range
+    (beyond_limit), each on their own path. Drawn on the colour aerial, as first shown."""
+    from PIL import Image, ImageDraw
+
+    W, H = size
+    x0, x1, y0, y1 = ext
+
+    def P(xy):
+        return [((x - x0) / (x1 - x0) * W, (y1 - y) / (y1 - y0) * H) for x, y in xy]
+
+    people = pts[pts["group"] == "people"]
+    far = people["beyond_limit"].astype(bool) if "beyond_limit" in people else \
+        pd.Series(False, index=people.index)
+    ww, wf = max(1, round(H / 2400)), max(2, round(2 * H / 2400))
+    white = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(white)
+    near = people[~far]
+    for _, t in near.groupby(near["track_id"].astype(int) % 1_000_000, sort=False):
+        if len(t) > 2:
+            d.line(P(t[["x", "y"]].to_numpy()[::3]), fill=(*WEB_WHITE, 255), width=ww)
+    pink = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(pink)
+    for _, t in people[far].groupby("track_id", sort=False):
+        if len(t) > 2:
+            d.line(P(t[["x", "y"]].to_numpy()[::2]), fill=(*WEB_FAR, 255), width=wf)
+    base = pf._soften(pf.aerial_rgb(raster, ext, W, H), 0.8, 0.12) if raster is not None \
+        else np.full((H, W, 3), pf.BG, np.float32)
+    wl, pl = np.asarray(white), np.asarray(pink)
+    return {"base": base, "white": wl, "far": pl,
+            "image": _over(_over(base, wl), pl), "n_far": int(people[far]["track_id"].nunique())}
+
+
 def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Path,
                     title: str, subtitle: str = "", credit: str = "", plan_height_px: int = 3000,
                     log=print) -> Path:
@@ -271,23 +310,31 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     ext = pf.plan_extent(pts, margin_frac=0.06, aspect=(0.62, 1.6))
     W, H = pf.plan_size(ext, plan_height_px)
     lw = 1.2 * plan_height_px / 2000
+    vis = cfg["visuals"]
+    bright = float(vis["basemap_brightness"])
     log(f"composite: {len(clips)} clips, {pts['track_id'].nunique()} tracks, "
         f"{len(pts)} samples, plan {W} x {H} px")
 
-    # ---- trails
-    L = pf.plan_layers(pts, raster, ext, plan_height_px, ranges, line_px=lw)
-    base = L["base"]
-    if L["aerial"] is not None:
-        _save(L["aerial"], images / "plan_aerial.png")
+    # ---- trails, drawn as the first maps (original.py)
+    if raster is not None:
+        _save(pf.aerial_rgb(raster, ext, W, H), images / "plan_aerial.png")
+    base = og.grey_base(raster, ext, (W, H), bright)
+    flow_base = og.grey_base(raster, ext, (W, H), bright * og.FLOW_LEVEL)
+    dens_base = og.grey_base(raster, ext, (W, H), bright * og.DENSITY_LEVEL)
     _save(base, images / "plan_map.png")
-    _save(_over(base, L["trails"]), images / "plan_tracks.png")
-    _save(L["trails"], images / "plan_tracks_layer.png")
+    tr = og.tracks_layer(pts, ext, (W, H), ranges, float(vis["line_width"]),
+                         bool(vis.get("show_predicted", True)))
+    _save(_over(base, tr), images / "plan_tracks.png")
+    _save(tr, images / "plan_tracks_layer.png")
+    # the white + pink web diagram (see web_diagram)
+    web = web_diagram(pts, raster, ext, (W, H))
+    _save(web["image"], images / "plan_web_diagram.png")
+    _save(web["white"], images / "plan_web_white_layer.png")
+    _save(web["far"], images / "plan_web_far_layer.png")
 
     # ---- flow field per group (each on its own speed scale)
     fc = float(cfg["field"]["cell_size_m"])
     field_files, mosaic = {}, {}
-    span = max(ext[1] - ext[0], ext[3] - ext[2])
-    min_len = float(np.clip(span * 0.015, 3.0, 6.0))
     for gname, rg in ranges.items():
         g = pts[pts["group"] == gname]
         if g["track_id"].nunique() < 5:
@@ -299,9 +346,8 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         # the image: the continuous field from all clips (continuous_field), speed colours
         mosaic[gname] = continuous_field(pts, gname, fc, float(cfg["field"]["smooth_m"]))
         mosaic[gname].to_csv(hou / f"vector_field_{gname}_continuous.csv", index=False)
-        fl = flow_layer(mosaic[gname], ext, (W, H), fc, rg,
-                        line_px=1.5 * plan_height_px / 2000, min_len_m=min_len, **SITE_LINES)
-        _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
+        fl = og.flow_layer([(mosaic[gname], rg)], ext, (W, H), fc, metres=True)
+        _save(_over(flow_base, fl), images / f"plan_flowfield_{gname}.png")
         _save(fl, images / f"plan_flowfield_{gname}_layer.png")
 
     # ---- master field: every group on one grid; image = each group's lines in its colour
@@ -315,28 +361,11 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         # the image: each group's continuous field (continuous_field), coloured by speed on
         # that group's own scale (as its plan and legend), so it shows all the registered
         # movement as one flow per group
-        layer = None
-        for gname in master_groups:
-            if gname not in mosaic or mosaic[gname].empty:
-                continue
-            fl = flow_layer(mosaic[gname], ext, (W, H), fc, ranges[gname],
-                            line_px=1.5 * plan_height_px / 2000, min_len_m=min_len,
-                            **SITE_LINES)
-            layer = fl if layer is None else pf.stack_rgba(layer, fl)
-        _save(_over(base, layer), images / "plan_flowfield_master.png")
+        layer = og.flow_layer([(mosaic[g], ranges[g]) for g in master_groups
+                               if g in mosaic and not mosaic[g].empty], ext, (W, H), fc,
+                              metres=True)
+        _save(_over(flow_base, layer), images / "plan_flowfield_master.png")
         _save(layer, images / "plan_flowfield_master_layer.png")
-        # and the pooled field of everything that moves (one consistent field, as in the data),
-        # smoother and bolder, each line in the colour of the group that dominates there
-        look = master_field(pts, master_groups, fc,
-                            float(np.clip(span * 0.012, float(cfg["field"]["smooth_m"]), 4.0)))
-        look = look.assign(palette_index=look["dominant_group"].map(
-            {g: k for k, g in enumerate(master_groups)}).astype(float))
-        layer = flow_layer(look, ext, (W, H), fc, (0.0, 1.0), min_confidence=0.3,
-                           min_dominance=0.5, line_px=1.5 * plan_height_px / 2000, spacing_m=1.3,
-                           min_len_m=float(np.clip(span * 0.045, 4.0, 14.0)), bold=1.5,
-                           palette=[group_rgb(g) for g in master_groups])
-        _save(_over(base, layer), images / "plan_flowfield_master_pooled.png")
-        _save(layer, images / "plan_flowfield_master_pooled_layer.png")
         log(f"  master field: {', '.join(master_groups)} on one grid ({len(mf)} cells)")
 
     # ---- where views overlap: do the clips agree on the movement? (per group)
@@ -361,8 +390,7 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
     def to_plan(a):                                   # grid (north = last row) -> plan pixels
         return cv2.resize(np.flipud(a).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
 
-    seen_p = to_plan((seen >= MIN_SEEN_S).astype(float)) > 0.5
-    dens, dmax = {}, {}
+    dens, dmax, dlo = {}, {}, {}
     for gname in ranges:
         g = pts[(pts["group"] == gname) & ~pts["predicted"].astype(bool)]
         if g.empty:
@@ -376,13 +404,12 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
                      gaussian_filter(occ, s) / np.maximum(gaussian_filter(seen, s), 1e-9)
                      / (GRID_M * GRID_M), np.nan)                        # e.g. people per m^2
         dens[gname] = d
-        dmax[gname] = float(np.nanpercentile(d, 99.5)) if np.isfinite(d).any() else 0.0
-        t = np.clip(np.nan_to_num(d / max(dmax[gname], 1e-9)), 0, 1) ** 0.5
-        tp = to_plan(t).clip(0, 1)
-        dl = np.dstack([density_rgb(tp),
-                        np.where(seen_p, np.clip(tp * 1.6 + 0.06, 0, 0.88) * 255, 0)]
-                       ).astype(np.uint8)
-        _save(_over(base, dl), images / f"plan_density_{gname}.png")
+        # drawn as the first density map: inferno, log scale (the top 0.5 % saturate)
+        cap = float(np.nanpercentile(d, 99.5)) if np.isfinite(d).any() else 0.0
+        dl, (dlo[gname], dmax[gname]) = og.density_layer(
+            np.flipud(np.minimum(np.nan_to_num(d), cap)), (W, H),
+            valid=np.flipud(seen >= MIN_SEEN_S))
+        _save(_over(dens_base, dl), images / f"plan_density_{gname}.png")
         _save(dl, images / f"plan_density_{gname}_layer.png")
     smax = float(seen.max())
     tc = to_plan(np.sqrt(seen / max(smax, 1e-9))).clip(0, 1)
@@ -416,13 +443,13 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         u = np.linspace(0, 1, 720)
         for gname, dm in dmax.items():
             legend_png(labels / f"legend_density_{gname}_{v}.png",
-                       f"{gname.upper()} PER 100 m²  ·  WHILE IN VIEW", "0", f"{dm * 100:.2g}",
-                       density_rgb(u ** 0.5), v)
+                       f"{gname.upper()} PER 100 m²  ·  WHILE IN VIEW  ·  LOG SCALE",
+                       f"{dlo[gname] * 100:.2g}", f"{dm * 100:.2g}", og.inferno_gradient(), v)
         legend_png(labels / f"legend_coverage_{v}.png", "SECONDS IN VIEW", "0", f"{smax:.0f} s",
                    coverage_rgb(u ** 0.5), v)
-        if master_groups:      # the pooled image colours lines by dominant group
-            group_key_png(labels / f"legend_flow_master_pooled_{v}.png",
-                          "FLOW  ·  DOMINANT GROUP", master_groups, v)
+        swatch_key_png(labels / f"legend_web_{v}.png", "PEOPLE",
+                       [("within the precise range (joined by track number)", WEB_WHITE),
+                        ("beyond it (less precise)", WEB_FAR)], v)
         scale_bar_png(labels / f"scale_bar_{v}.png", pf._nice(x1 - x0), W / (x1 - x0), v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
     (labels / "title.txt").write_text("\n".join(x for x in (title, subtitle, credit and

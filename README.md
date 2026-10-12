@@ -21,7 +21,7 @@ GeoTIFF ─► 2 CALIBRATE (once per site) ──► homography.json   (6–8 cl
                 │               vx vy speed heading, per-track metrics
           5 EXPORTS             data/: points.csv · tracks.geojson · metrics · stats
                 │               houdini/: vector fields + import scripts
-          6 VISUALS             <site>_plate.png · images/ (frameless) · labels/ (legends,
+          6 VISUALS             images/ (frameless) · labels/ (legends,
                                 scale bar, north arrow) · videos/ (with and without labels)
 ```
 
@@ -510,7 +510,7 @@ separate lines for QGIS. `field_grid.csv` and `density.png` leave them out by de
 Each run writes `runs/<site>/<run>/`, sorted by what you use it for:
 
 ```
-<site>_plate.png    the complete plate: in situ | plan, key figures, legend
+<site>_plate.png    the complete plate (only with package.plate: true)
 images/             frameless images (no title, frame, axes, legend or scale bar)
 labels/             the legends, scale bar and north arrow, on their own
 videos/             overlay / topdown / flowfield .mp4, and *_clean.mp4 without any labels
@@ -524,13 +524,13 @@ _working/           tracker output, camera motion, config + calibration snapshot
 
 | file | contents |
 |---|---|
-| `images/insitu_frame.png`, `insitu_tracks.png`, `insitu_boxes_layer.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same, slightly softened, with every track as a thin trail coloured by speed (blue slow → red fast, the same ramp as the videos and Houdini) and a thin box in the group colour around each object at that moment (boxes also alone as a layer) |
-| `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour, and softened a little (the base of the others, so the coloured lines read) |
-| `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | tracks (each with a thin dark edge), vector-field streamlines (only where the flow is well supported and one-directional) and occupancy (inferno: purple → yellow) |
+| `images/insitu_frame.png`, `insitu_tracks.png`, `insitu_boxes_layer.png` | the mid-clip video frame (people blurred, aligned to the calibration frame), and the same as a frame of the overlay video: dimmed, every track as a trail coloured by speed (blue slow → red fast, the same ramp as the videos and Houdini), a dot and a thin box in the group colour on each object at that moment (boxes also alone as a layer) |
+| `images/plan_aerial.png`, `plan_map.png` | the aerial at the plan extent, in colour, and in grey, dimmed (`visuals.basemap_brightness`): the base of the others, as in the first maps |
+| `images/plan_tracks.png`, `plan_flowfield.png`, `plan_density.png` | drawn exactly as the first maps (`extras/`), without frame or legend: tracks in the speed colours (white dots = bridged through occlusion), vector-field streamlines (colour = speed, width = how much data supports them) and occupancy (inferno, log scale) |
 | `images/*_layer.png` | the same drawings alone on transparency, to stack in Photoshop / InDesign / Illustrator. All `plan_*` images and layers share one extent and size |
 | `labels/legend_speed`, `legend_density`, `scale_bar`, `north_arrow` | `_light` (white ink, for dark backgrounds) and `_dark`, transparent. The scale bar is drawn at the plan images' pixel scale: resize the two together. `title.txt` holds the plate text |
-| `<site>_plate.png` | the complete plate, dark type on paper. Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw images and plate with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
-| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style: only the tracks that survive cleaning, as smoothed trails coloured by speed that fade out over the last 3 s (`debug_video.trail_s`, `null` keeps whole paths), with a dot and a thin box in the group's colour (people blue, cyclists green, vehicles red; `debug_video.boxes: false` hides them) at each current position, over the undimmed picture aligned to the calibration frame (no camera shake). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
+| `<site>_plate.png` | the complete plate, only with `package: plate: true` (off by default). Its text comes from `package:` in the config (`title`, `index`, `subtitle`, `date`, `credit`). Redraw the images with `groundtrack package -c ... --run ...` (`package: enabled: false` turns images, labels and clean videos off) |
+| `videos/overlay.mp4` | overlay on the original video, only with `--debug-video` (or `groundtrack debug-video`); people blurred unless `--no-blur`. Default **clean** style, as the first videos: only the tracks that survive cleaning, as smoothed trails coloured by speed, kept for the whole clip (`debug_video.trail_s: 3` keeps the last 3 s), with a dot at each current position over the slightly dimmed picture (`debug_video.dim`) aligned to the calibration frame (no camera shake), plus a thin box in the group's colour around each object (people blue, cyclists green, buses orange, vehicles red; `debug_video.boxes: false` hides them). `--boxes` writes the full debug view (boxes, IDs, rejected tracks in grey) as `overlay_boxes.mp4`, `--trail-s 5` keeps the last 5 s. Colour = real m/s once calibrated, approximate m/s from body height before that |
 | `videos/topdown.mp4` | the same, animated: trails build up over the map with a dot at each current position, legend, scale bar and clock (`visuals.topdown_video`, `topdown_video_speedup`) |
 | `videos/flowfield.mp4` | particles streaming through the smoothed vector field over the map, coloured by speed: the same field `houdini_field.py` gives a particle sim (`visuals.flowfield_video`) |
 | `videos/*_clean.mp4` | the same videos without clock, legend, scale bar or title |
@@ -755,7 +755,11 @@ RMS. Real footage will be worse; that's what this check is for.
   only measure where the geometry is good. On a real plaza clip this brought the median walking
   speed from an implausible 1.8 m/s down to 1.2 m/s, and cut impossible jumps by 90 %.
   `max_range_m: auto` (the template default) works it out per group from the calibrated camera:
-  people are kept while one pixel is under 0.25 m of depth, cycles 0.4 m, vehicles 1 m.
+  the precise range lasts while one pixel is under 0.25 m of depth for people, 0.4 m for cycles,
+  1 m for vehicles. Samples past it are kept up to 2.2x that distance and flagged
+  `beyond_limit = True` in `points.csv` (positions there are ~0.5-1 m less precise). They fill
+  in, for example, the middle of Trafalgar Square seen from the portico. Filter on the column
+  for the precise set.
 * **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
   markings to ~10 cm. Every run with vehicles compares each long, straight track with the
   lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as

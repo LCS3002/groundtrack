@@ -306,3 +306,24 @@ def test_camera_calibration_with_known_position(cam, ground_points):
     bad[2] += [6.0, -4.0]
     h2 = camera_calibration(px, bad, (cam.width, cam.height), prior)
     assert not h2.points[2]["inlier"] and sum(p["inlier"] for p in h2.points) == 7
+
+
+def test_far_samples_kept_and_flagged(cam, ground_points, cfg):
+    """Past the precise range (projection.max_range_m) samples are kept, flagged beyond_limit,
+    up to FAR_FACTOR x the range; further ones are dropped."""
+    from groundtrack.trajectories import FAR_FACTOR
+
+    from conftest import ORIGIN
+
+    h = fit_homography(cam.ground_to_pixel(ground_points), ground_points)
+    h.camera_params = {"E": ORIGIN[0], "N": ORIGIN[1] - 20.0, "height_m": 12.0}  # the camera
+    cfg.data["projection"]["max_range_m"] = 30
+    raw = _synthetic_raw(cam, [
+        (1, "person", (-5, 0), (1.3, 0.0), 90, set()),      # ~20 m away: precise
+        (2, "person", (-5, 30), (1.3, 0.0), 90, set()),     # ~50 m: kept, flagged
+        (3, "person", (-5, 30 * FAR_FACTOR), (1.3, 0.0), 90, set()),   # > 2.2 x 30 m: dropped
+    ])
+    points, _ = process_tracks(raw, cfg, h, FPS, 1, log=lambda *_: None)
+    by = points.groupby("track_id")["beyond_limit"].agg(["min", "max"])
+    assert set(by.index) == {1, 2}
+    assert not by.loc[1, "max"] and by.loc[2, "min"]

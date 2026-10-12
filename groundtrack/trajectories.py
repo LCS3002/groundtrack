@@ -19,7 +19,8 @@ from .lens import Lens
 DETECTED, PREDICTED, STITCHED, INTERPOLATED = "detected", "predicted", "stitched", "interpolated"
 
 POINT_COLUMNS = ["track_id", "class", "frame", "time_s", "x", "y", "vx", "vy", "speed",
-                 "heading", "predicted", "source", "group"]
+                 "heading", "predicted", "source", "group", "beyond_limit"]
+FAR_FACTOR = 2.2      # samples are kept out to this x the precise range, flagged beyond_limit
 
 
 # --------------------------------------------------------------------------- classes
@@ -360,11 +361,15 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
             {c: max_range_for(cfg, h, cfg.class_to_group[c]) for c in cfg.classes})
         limit = limit.astype(float).fillna(np.inf).to_numpy()
         d = np.hypot(g["gx"] - cam["E"], g["gy"] - cam["N"]).to_numpy()
-        far = d > limit
+        far = d > FAR_FACTOR * limit
+        beyond = (d > limit) & ~far
+        rng = ", ".join(f"{gn} {max_range_for(cfg, h, gn):.0f} m" for gn in cfg.groups
+                        if max_range_for(cfg, h, gn))
+        if beyond.any():
+            log(f"  {int(beyond.sum())} samples beyond the precise range ({rng}) kept, "
+                f"flagged beyond_limit (positions there less precise)")
         if far.any():
-            rng = ", ".join(f"{gn} {max_range_for(cfg, h, gn):.0f} m" for gn in cfg.groups
-                            if max_range_for(cfg, h, gn))
-            log(f"  {int(far.sum())} samples beyond the reliable range dropped ({rng})")
+            log(f"  {int(far.sum())} samples beyond {FAR_FACTOR:g}x the precise range dropped")
         g = g[~far]
 
     next_id = int(raw["track_id"].max()) + 1 if len(raw) else 1
@@ -424,7 +429,14 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
         f"{stats['interpolated']} samples interpolated")
     if not out_frames:
         return pd.DataFrame(columns=POINT_COLUMNS), pd.DataFrame()
-    points = pd.concat(out_frames, ignore_index=True)[POINT_COLUMNS]
+    points = pd.concat(out_frames, ignore_index=True)
+    points["beyond_limit"] = False
+    if cam and len(points):                  # past the precise range (still kept, see above)
+        lim = points["group"].map({gn: max_range_for(cfg, h, gn) for gn in cfg.groups})
+        lim = lim.astype(float).fillna(np.inf).to_numpy()
+        dd = np.hypot(points["x"] - cam["E"], points["y"] - cam["N"]).to_numpy()
+        points["beyond_limit"] = dd > lim
+    points = points[POINT_COLUMNS]
     summary = pd.DataFrame(summaries).sort_values("track_id").reset_index(drop=True)
     return points, summary
 

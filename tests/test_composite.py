@@ -87,7 +87,7 @@ def test_master_field_puts_every_group_on_one_grid(tmp_path):
     cars = m[m["dominant_group"] == "vehicles"]
     assert (cars["vehicles_vx"].dropna() < 0).mean() > 0.9                # cars go west
     assert (out / "images/plan_flowfield_master_layer.png").exists()
-    assert (out / "labels/legend_flow_master_pooled_light.png").exists()
+    assert (out / "labels/legend_web_light.png").exists()
     assert "vector_field_master.csv" in (out / "houdini/houdini_field.py").read_text()
 
 
@@ -127,3 +127,26 @@ def test_clip_fields_keep_each_clips_own_flow():
                         >= b["weight"].reindex(cont.index).fillna(0), 1, -1)
     ok = cont["confidence"] > 0.5
     assert (np.sign(cont.loc[ok, "vx"]) == stronger[ok.to_numpy()]).all()
+
+
+def test_web_diagram_layers(tmp_path):
+    """White: precise people joined by track number across clips; magenta: the far ones."""
+    from groundtrack.composite import web_diagram
+
+    rows = []
+    for clip, x0 in (("a", 0.0), ("b", 30.0)):
+        for tid in (1, 2):
+            t = np.arange(60) / FPS
+            rows.append(pd.DataFrame({"clip": clip, "track_id": tid, "group": "people",
+                                      "x": ORIGIN[0] + x0 + 1.2 * t, "y": ORIGIN[1] + 5 * tid,
+                                      "beyond_limit": tid == 2}))
+    pts = pd.concat(rows, ignore_index=True)
+    pts["track_id"] = pts["track_id"] + pts["clip"].map({"a": 1_000_000, "b": 2_000_000})
+    ext = (ORIGIN[0] - 5, ORIGIN[0] + 45, ORIGIN[1] - 5, ORIGIN[1] + 20)
+    web = web_diagram(pts, None, ext, (500, 250))
+    white, far = web["white"][..., 3] > 0, web["far"][..., 3] > 0
+    assert white.any() and far.any() and web["n_far"] == 2
+    # track 1 of clip a and track 1 of clip b are joined: white runs across the gap between them
+    row = int(round((ext[3] - (ORIGIN[1] + 5)) / (ext[3] - ext[2]) * 250))
+    gap = int(round((ORIGIN[0] + 20 - ext[0]) / (ext[1] - ext[0]) * 500))
+    assert white[row - 2:row + 3, gap].any()

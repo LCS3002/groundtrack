@@ -216,6 +216,20 @@ def group_key_png(path: Path, caption: str, groups, variant: str) -> Path:
     return path
 
 
+def swatch_key_png(path: Path, caption: str, items, variant: str) -> Path:
+    """A key of line swatches [(label, rgb), ...], one per row."""
+    ink, grey = INK_VARIANTS[variant]
+    img, d = _canvas(900, 60 + 46 * len(items))
+    pf._text(d, (4, 4), caption, 26, "SemiLight", grey, tracking=0.3)
+    for k, (label, rgb) in enumerate(items):
+        y = 62 + 46 * k
+        d.rectangle([4, y - 4, 82, y + 10], fill=(40, 40, 42, 255))
+        d.line([(10, y + 3), (76, y + 3)], fill=(*rgb, 255), width=6)
+        pf._text(d, (96, y - 14), label, 28, "Light", ink)
+    img.save(path)
+    return path
+
+
 def scale_bar_png(path: Path, metres: float, px_per_m: float, variant: str) -> Path:
     ink, _ = INK_VARIANTS[variant]
     L = metres * px_per_m
@@ -322,31 +336,37 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     cam = hom.get("camera_params")
     variants = list(pk.get("label_variants") or ["light", "dark"])
 
-    # ---- plan images: one extent, one size
-    ext = pf.plan_extent(points)
+    # ---- plan images: one extent, one size, drawn as the first maps (original.py)
+    from . import original as og
+
+    vis = cfg["visuals"]
+    bright = float(vis["basemap_brightness"])
+    from .visuals import _extent
+
+    ext = _extent(points, raster, cfg)          # framed as the first maps: data + margin_m
     plan_h = int(pk.get("plan_height_px", 2400))
     W, H = pf.plan_size(ext, plan_h)
-    lw = 1.3 * plan_h / 2000
-    L = pf.plan_layers(points, raster, ext, plan_h, ranges, line_px=lw)
-    base = L["base"]
-    if L["aerial"] is not None:
-        _save(L["aerial"], images / "plan_aerial.png")
+    if raster is not None:
+        _save(pf.aerial_rgb(raster, ext, W, H), images / "plan_aerial.png")
+    base = og.grey_base(raster, ext, (W, H), bright)
     _save(base, images / "plan_map.png")
-    _save(_over(base, L["trails"]), images / "plan_tracks.png")
-    _save(L["trails"], images / "plan_tracks_layer.png")
+    tr = og.tracks_layer(points, ext, (W, H), ranges, float(vis["line_width"]),
+                         bool(vis.get("show_predicted", True)))
+    _save(_over(base, tr), images / "plan_tracks.png")
+    _save(tr, images / "plan_tracks_layer.png")
     # one field per group (each on its own speed scale), or the single "all" field
     fields = [(run.field_csv(gn), rg) for gn, rg in ranges.items() if len(ranges) > 1
               and run.field_csv(gn).exists()] or [(run.field_csv(), next(iter(ranges.values())))]
     if all(f.exists() for f, _ in fields):
-        flow = None
-        for f, rg in fields:
-            fl = flow_layer(pd.read_csv(f), ext, (W, H), float(cfg["field"]["cell_size_m"]), rg,
-                            line_px=1.6 * plan_h / 2000)
-            flow = fl if flow is None else pf.stack_rgba(flow, fl)
-        _save(_over(base, flow), images / "plan_flowfield.png")
+        flow = og.flow_layer([(pd.read_csv(f), rg) for f, rg in fields], ext, (W, H),
+                             float(cfg["field"]["cell_size_m"]))
+        _save(_over(og.grey_base(raster, ext, (W, H), bright * og.FLOW_LEVEL), flow),
+              images / "plan_flowfield.png")
         _save(flow, images / "plan_flowfield_layer.png")
-    dens, dmax = density_layer(points, ext, (W, H), stride / fps)
-    _save(_over(base, dens), images / "plan_density.png")
+    occ, _ = og.occupancy(points, ext, stride / fps)
+    dens, (dlo, dmax) = og.density_layer(occ, (W, H))
+    _save(_over(og.grey_base(raster, ext, (W, H), bright * og.DENSITY_LEVEL), dens),
+          images / "plan_density.png")
     _save(dens, images / "plan_density_layer.png")
 
     # ---- in situ (needs the footage)
@@ -357,14 +377,14 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
                                   line_px=1.6 * int(meta["height"]) / 1400)
         _save(insitu["frame_rgb"], images / "insitu_frame.png")
         _save(_over(_over(insitu["base"], insitu["trails"]), insitu["boxes"]),
-              images / "insitu_tracks.png")
+              images / "insitu_tracks.png")       # as a frame of the overlay video
         _save(insitu["trails"], images / "insitu_tracks_layer.png")
         _save(insitu["boxes"], images / "insitu_boxes_layer.png")
     else:
         log(f"images: footage {video} not found, in-situ images skipped")
 
     # ---- labels (one speed legend per group when several are present)
-    den_grad = density_rgb(np.linspace(0, 1, 720) ** 0.45)
+    den_grad = og.inferno_gradient()
     px_per_m = W / (ext[1] - ext[0])
     bar_m = pf._nice(ext[1] - ext[0])
     for v in variants:
@@ -377,8 +397,8 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
             else:
                 legend_png(labels / f"legend_speed_{gname}_{v}.png", f"SPEED  ·  {gname.upper()}",
                            f"{lo:g}", hi_txt, spd_grad, v)
-        legend_png(labels / f"legend_density_{v}.png", "OCCUPANCY", "low",
-                   f"{dmax:.2g} s / m²", den_grad, v)
+        legend_png(labels / f"legend_density_{v}.png", "OCCUPANCY  ·  LOG SCALE",
+                   f"{dlo:.2g}", f"{dmax:.2g} s / m²", den_grad, v)
         scale_bar_png(labels / f"scale_bar_{v}.png", bar_m, px_per_m, v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
 
@@ -413,8 +433,8 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
     }
     run.metrics_json.write_text(json.dumps(info, indent=2, default=float), encoding="utf-8")
 
-    # ---- the complete plate
-    if plate and insitu is not None:
+    # ---- the complete plate (off unless package.plate: true)
+    if plate and pk.get("plate", False) and insitu is not None:
         pf.make_plate(cfg, run.root, raster, run.plate(cfg.site), text["title"], text["index"],
                       text["subtitle"], text["date"], credit=text["credit"])
     log(f"images (frameless), labels, metrics and plate -> {run.root}")

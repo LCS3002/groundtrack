@@ -16,7 +16,6 @@ REPO_MODELS = Path(__file__).resolve().parents[1] / "models"
 
 # the run folder, sorted by use (groundtrack/layout.py)
 EXPECTED_FILES = [
-    "demo_plate.png",
     # frameless images and their transparent layers
     "images/insitu_frame.png", "images/insitu_tracks.png", "images/insitu_tracks_layer.png",
     "images/plan_map.png", "images/plan_aerial.png", "images/plan_tracks.png",
@@ -76,9 +75,9 @@ def test_all_outputs_written(demo_run):
     missing = [f for f in EXPECTED_FILES if not (run_dir / f).exists()]
     assert not missing
     assert (run_dir / "extras" / "topdown.png").stat().st_size > 50_000
-    # nothing loose at the top except the plate
+    # nothing loose at the top (plates are off by default: package.plate)
     loose = [p.name for p in run_dir.iterdir() if p.is_file()]
-    assert loose == ["demo_plate.png"]
+    assert loose == []
 
 
 def test_package_images_stack(demo_run):

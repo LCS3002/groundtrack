@@ -28,7 +28,7 @@ GREY = (112, 112, 118)
 HAIR = (206, 206, 210)
 CASING = (20, 20, 22)         # thin dark edge under every trail: reads on light and dark ground
 SOFTEN_PLAN = (0.8, 0.0, 0.88)  # aerial: 80% of the saturation, 88% brightness (lines read)
-SOFTEN_INSITU = (0.9, 0.06)
+SOFTEN_INSITU = (1.0, 0.0, 0.75)   # in situ: the frame dimmed as in the overlay videos
 LEGEND_PITCH = 140             # plate: one speed legend row per group
 FONT_FILES = [r"C:\Windows\Fonts\bahnschrift.ttf", "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
@@ -183,7 +183,21 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
     rgb = cv2.cvtColor(cv2.resize(img, (int(round(W * s)), out_h), interpolation=cv2.INTER_AREA),
                        cv2.COLOR_BGR2RGB)
     stride = max(1, int(np.median(np.diff(np.sort(raw["frame"].unique())))))
-    trails = _trail_layer(rgb.shape[:2], _segments_from(paths, lo_, hi_, 3 * stride), line_px)
+    th = max(1, int(round(2 * max(rgb.shape[:2]) / 1920)))       # as the overlay videos
+    trails = _trail_layer(rgb.shape[:2], _segments_from(paths, lo_, hi_, 3 * stride),
+                          max(2, th), casing=0.0)
+    dots = []                                  # each object's position at this frame
+    for xy, sp, fr, a, b in paths:
+        k = np.flatnonzero(fr == frame)
+        if len(k):
+            dots.append((xy[k[0]], speed_rgb(sp[k[0]], a, b)))
+    if dots:
+        lay = np.zeros(rgb.shape[:2] + (4,), np.uint8)
+        for (x, y), c in dots:
+            cv2.circle(lay, (int(x), int(y)), 3 * th, (20, 20, 20, 255), -1, cv2.LINE_AA)
+            cv2.circle(lay, (int(x), int(y)), 2 * th, (int(c[0]), int(c[1]), int(c[2]), 255),
+                       -1, cv2.LINE_AA)
+        trails = stack_rgba(trails, lay)
     # boxes of the tracks drawn (kept by cleaning), in the picture's (registered) pixels
     at = raw[(raw["frame"] == frame) & keep & ~raw["predicted"]]
     Hf = reg.get(frame) if reg is not None else None

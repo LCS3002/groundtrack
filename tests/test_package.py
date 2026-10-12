@@ -65,7 +65,8 @@ def test_each_group_on_its_own_scale(mixed_run):
     # cars at 15 m/s on the vehicle scale (0-35) take that scale's colour, not the "fastest"
     # red they would have on the people scale (0-2.5)
     layer = np.asarray(Image.open(run.images / "plan_tracks_layer.png"), float)
-    ext = plan_extent(pts)
+    e = info["plan"]["extent_m"]                     # framed as the first maps
+    ext = (e["west"], e["east"], e["south"], e["north"])
     W, H = plan_size(ext, 600)
     row = int(round((ext[3] - 180030.0) / (ext[3] - ext[2]) * H))
     band = layer[row - 1:row + 2]

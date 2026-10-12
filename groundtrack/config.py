@@ -155,18 +155,19 @@ DEFAULTS: dict[str, Any] = {
         "subtitle": None,         # e.g. "Canary Wharf, London  ·  pedestrian movement"
         "date": None,             # default: today, DD.MM.YYYY
         "credit": None,           # imagery credit in the plate's footnote
+        "plate": False,            # true: also the complete plate (<site>_plate.png)
         "label_variants": ["light", "dark"],  # ink for dark / light backgrounds
     },
     "debug_video": {
         "enabled": False,
         "blur_people": True,
         "blur_plates": True,      # the lower part of every near vehicle (number plates)
-        "trail_s": 3.0,           # each trail fades out over the last 3 s; null = whole clip
+        "trail_s": None,          # null = trails stay for the whole clip; e.g. 3 = last 3 s
         "style": "clean",         # clean: trails + dots, cleaned tracks only | boxes: debug
         "boxes": True,            # clean style: a thin box per object (people blue,
                                   # cyclists green, vehicles red)
         "stabilize_output": True, # align the output video to the calibration frame
-        "dim": 1.0,               # < 1 darkens the video under the trails
+        "dim": 0.75,              # darken the video under the trails (as the first videos)
     },
 }
 
