@@ -96,10 +96,9 @@ def flow_layer(field, ext, size, cell: float, speed_range,
     ax.set_ylim(ext[2], ext[3])
     pt = 0.72 * line_px                                   # px -> pt at 100 dpi
     span = max(ext[1] - ext[0], ext[3] - ext[2])
-    # streamplot works in fractions of the plot: lines >= min_len_m long and spaced in metres
-    density = (float(np.clip(span / (30 * spacing_m), 1.2, 12.0)) if spacing_m else
-               float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0)))
-    minlength = float(np.clip(min_len_m / max(span, 1e-6), 0.01, 0.5))
+    # streamplot measures spacing and length relative to each field's own grid, not the plan:
+    # convert from metres per field, so a small field (one clip) is not packed denser
+    plan_density = float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0))
     for fld, col in items:
         if fld is None or fld.empty:
             continue
@@ -113,6 +112,10 @@ def flow_layer(field, ext, size, cell: float, speed_range,
             weak |= D < min_dominance
         if len(xs) < 2 or len(ys) < 2 or (~weak).sum() <= 4:
             continue
+        span_f = max(xs[-1] - xs[0], ys[-1] - ys[0]) + cell
+        spacing = spacing_m or span / (30 * plan_density)
+        density = float(np.clip(span_f / (30 * spacing), 0.2, 12.0))
+        minlength = float(np.clip(min_len_m / span_f, 0.01, 1.0))
         Um = np.ma.array(np.nan_to_num(U), mask=weak)
         Vm = np.ma.array(np.nan_to_num(V), mask=weak)
         if palette is not None:

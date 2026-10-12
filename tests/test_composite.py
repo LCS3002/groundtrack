@@ -91,11 +91,12 @@ def test_master_field_puts_every_group_on_one_grid(tmp_path):
     assert "vector_field_master.csv" in (out / "houdini/houdini_field.py").read_text()
 
 
-def test_clip_mosaic_keeps_each_clips_own_flow():
+def test_clip_fields_keep_each_clips_own_flow():
     """Two clips of the same ground, filmed at different moments: one sees people walking east,
-    the other west. Pooled, the directions cancel; the mosaic keeps each clip's coherent flow
-    and every observed cell belongs to exactly one clip."""
-    from groundtrack.composite import clip_mosaic
+    the other west. Pooled, the directions cancel; drawn as each clip's own field, both
+    coherent flows stay (that is what the composite flow images show)."""
+    from groundtrack.composite import clip_fields
+    from groundtrack.field import smooth_field
 
     rows = []
     for clip, v, n0 in (("a", 1.3, 0), ("b", -1.3, 100)):
@@ -107,10 +108,13 @@ def test_clip_mosaic_keeps_each_clips_own_flow():
                 "y": ORIGIN[1] + 20 + 0.6 * k + (0.3 if clip == "b" else 0), "vx": v, "vy": 0.0,
                 "speed": abs(v), "heading": 90.0 if v > 0 else 270.0}))
     pts = pd.concat(rows, ignore_index=True)
-    parts = clip_mosaic(pts, "people", 1.0, 2.0)
+    parts = clip_fields(pts, "people", 1.0, 2.0)
     assert len(parts) == 2
-    cells = [set(zip(f["i"], f["j"])) for f in parts]
-    assert not (cells[0] & cells[1])                       # one clip per cell
-    for f in parts:
+    for f, sign in zip(parts, (1, -1)):
         strong = f[f["confidence"] > 0.5]
-        assert len(strong) and (np.sign(strong["vx"]).nunique() == 1)   # coherent per clip
+        assert len(strong) and (np.sign(strong["vx"]) == sign).all()    # coherent per clip
+    pooled = smooth_field(pts, 1.0, 2.0, 1 / FPS, direction_bins=0).set_index(["i", "j"])
+    a, b = (f.set_index(["i", "j"]) for f in parts)
+    shared = a.index[a["confidence"] > 0.5].intersection(b.index[b["confidence"] > 0.5])
+    assert len(shared)
+    assert pooled.loc[shared, "speed"].median() < 0.5 * 1.3   # pooled, the moments cancel out

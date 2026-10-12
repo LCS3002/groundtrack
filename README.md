@@ -582,10 +582,9 @@ with the pooled velocity of everything that moves (weighted by how much each gro
 per-group columns (`people_vx`, `vehicles_speed`, ...) and the `dominant_group` of each cell.
 The Houdini and Grasshopper scripts use the master as their default field.
 
-**Flow images of a composite** (`plan_flowfield_<group>`, `plan_flowfield_master`) show every
-clip's *own* flow field, cut into a mosaic so each spot shows the clip that saw it most. Each clip
-is one stretch of time and moves coherently, so the union shows all the movement that was
-registered. A field pooled over all clips cancels out wherever different moments moved
+**Flow images of a composite** (`plan_flowfield_<group>`, `plan_flowfield_master`) draw every
+clip's *own* flow field together, lines about 3 m apart in each. Each clip is one stretch of time
+and moves coherently, so together they show all the movement that was registered. A field pooled over all clips cancels out wherever different moments moved
 differently: on the Trafalgar terrace, 26 clips pooled left almost nothing. The master image draws
 the groups in their colours: people blue, cyclists green, buses orange, vehicles red. The pooled
 field (the one in the data files) is drawn as `plan_flowfield_master_pooled`: bold continuous
