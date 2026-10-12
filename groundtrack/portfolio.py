@@ -29,6 +29,7 @@ HAIR = (206, 206, 210)
 CASING = (20, 20, 22)         # thin dark edge under every trail: reads on light and dark ground
 SOFTEN_PLAN = (0.8, 0.12)     # aerial: keep 80% of the saturation, lift 12% toward white
 SOFTEN_INSITU = (0.9, 0.06)
+LEGEND_PITCH = 140             # plate: one speed legend row per group
 FONT_FILES = [r"C:\Windows\Fonts\bahnschrift.ttf", "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
 
@@ -309,7 +310,7 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
     ranges = group_ranges(cfg, points)
     groups = list(ranges)
 
-    margin, gutter, top, bottom = 200, 90, 520, 320 + 80 * len(groups)
+    margin, gutter, top, bottom = 200, 90, 520, 400 + LEGEND_PITCH * (len(groups) - 1)
     if width:  # same plate width for every clip: panels share it in proportion to their aspect
         _, e0 = plan_panel(points, None, cfg, 200, ranges)
         a_left = float(meta["width"]) / float(meta["height"])
@@ -398,7 +399,7 @@ def make_plate(cfg: Config, run_dir: Path, raster: GeoRaster | None, out_png: Pa
 
     # legend: one hairline gradient per group, each track is coloured on its group's scale
     for k, (gname, (lo, hi)) in enumerate(ranges.items()):
-        yk = y0 + k * 80
+        yk = y0 + k * LEGEND_PITCH
         grad = speed_rgb(np.linspace(lo, hi, lw), lo, hi).astype(np.uint8)
         canvas.paste(Image.fromarray(np.repeat(grad[None], 6, axis=0)), (lx, yk + 70))
         _text(d, (lx, yk), "SPEED" + (f"  ·  {gname.upper()}" if len(ranges) > 1 else ""), 22,
