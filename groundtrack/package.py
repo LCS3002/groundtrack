@@ -112,10 +112,13 @@ def flow_layer(field, ext, size, cell: float, speed_range,
             weak |= D < min_dominance
         if len(xs) < 2 or len(ys) < 2 or (~weak).sum() <= 4:
             continue
-        span_f = max(xs[-1] - xs[0], ys[-1] - ys[0]) + cell
-        spacing = spacing_m or span / (30 * plan_density)
-        density = float(np.clip(span_f / (30 * spacing), 0.2, 12.0))
-        minlength = float(np.clip(min_len_m / span_f, 0.01, 1.0))
+        if spacing_m:       # metres, whatever the size of this field
+            span_f = max(xs[-1] - xs[0], ys[-1] - ys[0]) + cell
+            density = float(np.clip(span_f / (30 * spacing_m), 0.2, 12.0))
+            minlength = float(np.clip(min_len_m / span_f, 0.01, 1.0))
+        else:               # one field covering the plan (a single clip): as dense as the plan
+            density = plan_density
+            minlength = float(np.clip(min_len_m / max(span, 1e-6), 0.01, 0.5))
         Um = np.ma.array(np.nan_to_num(U), mask=weak)
         Vm = np.ma.array(np.nan_to_num(V), mask=weak)
         if palette is not None:
