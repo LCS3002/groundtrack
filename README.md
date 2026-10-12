@@ -535,6 +535,23 @@ symbology with `mean_vx` / `mean_vy`.
 
 ---
 
+### Several clips of one place: `composite`
+
+Every run of a site is already in British National Grid on the same aerial, so the clips of
+one place combine into one plan:
+
+```powershell
+groundtrack composite sites/trafalgar63*.yaml -o results/trafalgar_composite --title "Trafalgar Square"
+```
+
+It writes the same kind of package as a run (`images/` frameless plans and layers, `labels/`,
+`data/`, `houdini/`): all trails, a flow field per group, each clip's view footprint with its
+number, a coverage map (seconds each spot was in view) and **density per second in view**:
+person-seconds per m² divided by the seconds the cell was watched, so a spot two clips filmed is
+not twice as busy and a spot nobody filmed stays blank. The clips are usually filmed one after
+another, not at once: the composite shows typical movement over the time they cover. Rough
+calibrations (`method_info.grade` in the calibration file) are included unless `--only-ok`.
+
 ## 6. Houdini import
 
 1. Create a *Geometry* node. Inside it, add a **Python** SOP (*Python Script*).

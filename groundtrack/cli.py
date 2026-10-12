@@ -133,6 +133,40 @@ def _privacy_boxes_of(cfg):
                          bool(dv.get("blur_plates", True)))
 
 
+def cmd_composite(args):
+    """Several clips of one place on one plan (see composite.py)."""
+    from .composite import build_composite, load_clip
+    from .config import load_config
+    from .geo import load_geotiff
+    from .layout import Run
+
+    clips = []
+    for c in args.configs:
+        cfg = load_config(c)
+        root = (cfg.path("output_dir") or cfg.base_dir / "runs") / cfg.site
+        if args.run:
+            rd = root / args.run
+        else:
+            runs = sorted((p for p in root.glob("*") if Run(p).processed()),
+                          key=lambda p: p.stat().st_mtime) if root.exists() else []
+            rd = runs[-1] if runs else None
+        clip = load_clip(cfg.site, cfg, rd) if rd is not None else None
+        if clip is None:
+            print(f"  {cfg.site}: no processed run, left out")
+            continue
+        if args.only_ok and clip.grade != "ok":
+            print(f"  {cfg.site}: calibration graded {clip.grade}, left out (--only-ok)")
+            continue
+        clips.append(clip)
+    if not clips:
+        raise SystemExit("no processed runs to combine")
+    cfg0 = clips[0].cfg
+    pk = cfg0.get("package") or {}
+    raster = load_geotiff(cfg0.path("geotiff"), max_dim=20000) if cfg0.get("geotiff") else None
+    build_composite(clips, raster, Path(args.out), args.title or pk.get("title") or cfg0.site,
+                    args.subtitle or "", pk.get("credit", ""), plan_height_px=args.height)
+
+
 def cmd_privacy(args):
     """Every person / vehicle box of a run's frames, for blurring (runs tracked before
     privacy_boxes.csv was written); re-render the overlay video / package afterwards."""
@@ -372,6 +406,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run-name")
     s.add_argument("--max-frames", type=int, help="process only this many frames (testing)")
     s.set_defaults(func=cmd_track)
+
+    s = sub.add_parser("composite", help="several clips of one place on one plan")
+    s.add_argument("configs", nargs="+", help="site configs (one per clip)")
+    s.add_argument("--out", "-o", required=True)
+    s.add_argument("--run", help="run name in each site (default: the latest processed)")
+    s.add_argument("--title")
+    s.add_argument("--subtitle")
+    s.add_argument("--only-ok", action="store_true", help="leave out calibrations graded rough")
+    s.add_argument("--height", type=int, default=3000, help="plan height in px")
+    s.set_defaults(func=cmd_composite)
 
     s = common(sub.add_parser("privacy", help="detect every person / vehicle of a run for "
                                               "blurring (older runs)"))
