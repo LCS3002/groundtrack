@@ -115,7 +115,10 @@ def insitu_layers(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: in
         frame = int((raw["frame"].min() + raw["frame"].max()) // 2)
 
     dv = cfg.get("debug_video") or {}
-    hide = privacy_boxes(raw, bool(dv.get("blur_people", True)), bool(dv.get("blur_plates", True)))
+    from .debug_video import raw_all
+
+    hide = privacy_boxes(raw_all(run_dir, raw), bool(dv.get("blur_people", True)),
+                         bool(dv.get("blur_plates", True)))
 
     def blurred(f):
         im = read_frame(video, f)

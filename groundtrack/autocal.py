@@ -1381,10 +1381,10 @@ def run_autocalibration(cfg, log=print, run_dir: Path | None = None, device: str
         blend = frame.copy()
         blend[ins] = (0.5 * frame[ins] + 0.5 * mp[ins]).astype(np.uint8)
         if raw is not None:                  # people and number plates blurred
-            from .debug_video import blur_box, privacy_boxes
+            from .debug_video import blur_box, privacy_boxes, raw_all
 
             dv = cfg.get("debug_video") or {}
-            hide = privacy_boxes(raw, bool(dv.get("blur_people", True)),
+            hide = privacy_boxes(raw_all(rd, raw), bool(dv.get("blur_people", True)),
                                  bool(dv.get("blur_plates", True)))
             for r in hide[hide["frame"] == int(frame_idx)].itertuples():
                 blur_box(blend, r.x1, r.y1, r.x2, r.y2)

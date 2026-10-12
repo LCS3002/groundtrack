@@ -41,3 +41,20 @@ def test_blur_removes_detail_inside_the_box_only():
     inside, outside = (slice(60, 140), slice(60, 140)), (slice(0, 40), slice(0, 40))
     assert out[inside].std() < 0.3 * img[inside].std()
     assert np.array_equal(out[outside], img[outside])
+
+
+def test_untracked_detections_are_blurred_too(tmp_path):
+    """A person cut off by the bottom of the frame is dropped from the tracks (no feet) but
+    must still be blurred: privacy_boxes.csv joins the tracked boxes."""
+    from groundtrack.debug_video import raw_all
+    from groundtrack.layout import Run
+
+    run = Run(tmp_path / "run").make()
+    tracked = pd.DataFrame({"track_id": [1], "class": ["person"], "class_id": [0], "frame": [0],
+                            "time_s": [0.0], "x1": [10], "y1": [20], "x2": [40], "y2": [120],
+                            "confidence": [0.9], "predicted": [False]})
+    tracked.to_csv(run.raw_tracks, index=False)
+    pd.DataFrame({"frame": [0], "class": ["person"], "x1": [500], "y1": [700], "x2": [700],
+                  "y2": [1080]}).to_csv(run.privacy, index=False)
+    b = privacy_boxes(raw_all(run.root, tracked))
+    assert set(b["x1"]) == {10, 500}

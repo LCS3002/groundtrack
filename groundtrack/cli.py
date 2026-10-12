@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -125,8 +126,25 @@ def _privacy_boxes_of(cfg):
     if rd is None or not open_run(rd).raw_tracks.exists():
         return None
     dv = cfg.get("debug_video") or {}
-    return privacy_boxes(pd.read_csv(open_run(rd).raw_tracks), bool(dv.get("blur_people", True)),
+    from .debug_video import raw_all
+
+    return privacy_boxes(raw_all(rd, pd.read_csv(open_run(rd).raw_tracks)),
+                         bool(dv.get("blur_people", True)),
                          bool(dv.get("blur_plates", True)))
+
+
+def cmd_privacy(args):
+    """Every person / vehicle box of a run's frames, for blurring (runs tracked before
+    privacy_boxes.csv was written); re-render the overlay video / package afterwards."""
+    from .detect import detect_privacy_boxes
+    from .layout import open_run
+
+    cfg = _cfg(args)
+    run = open_run(args.run)
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    detect_privacy_boxes(cfg, Path(meta["video"]), run.privacy, _device(cfg),
+                         int(meta["start_frame"]), int(meta["end_frame"]),
+                         int(meta["vid_stride"]))
 
 
 def cmd_autocalibrate(args):
@@ -354,6 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run-name")
     s.add_argument("--max-frames", type=int, help="process only this many frames (testing)")
     s.set_defaults(func=cmd_track)
+
+    s = common(sub.add_parser("privacy", help="detect every person / vehicle of a run for "
+                                              "blurring (older runs)"))
+    s.add_argument("--run", required=True)
+    s.set_defaults(func=cmd_privacy)
 
     s = common(sub.add_parser("process", help="stages 3-6 on an existing run (fast re-run)"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")

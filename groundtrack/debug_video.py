@@ -386,7 +386,13 @@ def render_debug_video(video: Path, raw: pd.DataFrame, cfg: Config, out_path: Pa
 
 
 def raw_all(run_dir, fallback: pd.DataFrame) -> pd.DataFrame:
-    """Every box of the run (incl. those the clean style hides), for blurring."""
-    if run_dir is not None and open_run(run_dir).raw_tracks.exists():
-        return pd.read_csv(open_run(run_dir).raw_tracks)
-    return fallback
+    """Every box to blur: the tracks (incl. those the clean style hides) and every untracked
+    detection (privacy_boxes.csv: e.g. people cut off by the frame edge, not yet tracked)."""
+    if run_dir is None:
+        return fallback
+    run = open_run(run_dir)
+    r = pd.read_csv(run.raw_tracks) if run.raw_tracks.exists() else fallback
+    if run.privacy.exists():
+        p = pd.read_csv(run.privacy)
+        r = pd.concat([r[["frame", "class", "x1", "y1", "x2", "y2"]], p], ignore_index=True)
+    return r

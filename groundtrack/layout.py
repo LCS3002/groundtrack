@@ -38,6 +38,7 @@ class Run:
 
     # tracker + provenance
     raw_tracks = property(lambda s: s.work / "raw_tracks.csv")
+    privacy = property(lambda s: s.work / "privacy_boxes.csv")
     meta = property(lambda s: s.work / "raw_tracks_meta.json")
     registration = property(lambda s: s.work / "registration.npz")
     config_used = property(lambda s: s.work / "config_used.yaml")

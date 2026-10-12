@@ -27,6 +27,11 @@ from .video import point_in_polygon, video_info
 RAW_COLUMNS = ["track_id", "class", "class_id", "frame", "time_s", "x1", "y1", "x2", "y2",
                "confidence", "predicted"]
 RIDEABLE = {COCO_IDS["bicycle"], COCO_IDS["motorcycle"]}
+# always detected and written to privacy_boxes.csv, whatever is tracked: everything that gets
+# blurred (people, and vehicles for their number plates), before any filter drops a box -
+# a person cut off by the bottom of the frame is no use for measuring but must be blurred
+PRIVACY_IDS = {COCO_IDS[c] for c in ("person", "car", "motorcycle", "bus", "truck")}
+PRIVACY_COLUMNS = ["frame", "class", "x1", "y1", "x2", "y2"]
 
 
 def _load_tracker_cfg(name: str) -> tuple[str, SimpleNamespace]:
@@ -158,6 +163,50 @@ class _NumpyBoxes:
         return _NumpyBoxes(self.xyxy[idx], self.conf[idx], self.cls[idx])
 
 
+def detect_privacy_boxes(cfg: Config, video: Path, out_csv: Path, device: str, start: int,
+                         end: int, stride: int, log=print) -> int:
+    """Detection only: every person / vehicle box of every processed frame, for blurring
+    (privacy_boxes.csv). For runs tracked before that file existed. Returns the box count."""
+    from ultralytics import YOLO
+
+    det = cfg["detection"]
+    model = YOLO(cfg.model_path())
+    half = bool(det.get("half")) and half_supported(device)
+    rows: list[tuple] = []
+    cap = cv2.VideoCapture(str(video))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    batch: list[tuple[int, np.ndarray]] = []
+
+    def flush():
+        if not batch:
+            return
+        res = model.predict([f for _, f in batch], imgsz=det["imgsz"], conf=det["conf"],
+                            iou=det["iou"], classes=sorted(PRIVACY_IDS), device=device,
+                            verbose=False, **_precision_kwargs(half))
+        for (fidx, _), r in zip(batch, res):
+            b = r.boxes.cpu().numpy()
+            for (x1, y1, x2, y2), c in zip(b.xyxy, b.cls.astype(int)):
+                rows.append((fidx, COCO_NAMES.get(int(c), str(c)), x1, y1, x2, y2))
+        batch.clear()
+
+    for fidx in range(start, end):
+        if (fidx - start) % stride:
+            if not cap.grab():
+                break
+            continue
+        ok, frame = cap.read()
+        if not ok:
+            break
+        batch.append((fidx, frame))
+        if len(batch) >= max(1, int(det.get("batch", 4))):
+            flush()
+    flush()
+    cap.release()
+    pd.DataFrame(rows, columns=PRIVACY_COLUMNS).round(1).to_csv(out_csv, index=False)
+    log(f"privacy boxes: {len(rows)} person / vehicle boxes -> {out_csv}")
+    return len(rows)
+
+
 def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print,
                  progress: bool = True, max_frames: int | None = None) -> pd.DataFrame:
     from ultralytics import YOLO
@@ -176,7 +225,8 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
     tracker, ttype = make_tracker(det["tracker"], info.fps / stride, det.get("track_buffer_s"),
                                   device, log)
     wanted = set(cfg.class_ids)
-    predict_ids = sorted(wanted | (RIDEABLE if det.get("suppress_riders") else set()))
+    predict_ids = sorted(wanted | (RIDEABLE if det.get("suppress_riders") else set())
+                         | PRIVACY_IDS)
     half = bool(det.get("half")) and half_supported(device)
     precision = _precision_kwargs(half)
     log(f"video {Path(video).name}: {info.width}x{info.height} @ {info.fps:.3f} fps, "
@@ -206,6 +256,7 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
     if start:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     rows: list[tuple] = []
+    privacy_rows: list[tuple] = []
     pending: dict[int, list[tuple]] = {}
     record_pred = bool(det.get("record_predicted", True))
 
@@ -229,6 +280,9 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
             reg_frames.append(fidx)
             reg_H.append(H_ref)
             reg_inl.append(n_in)
+        for (x1, y1, x2, y2), c in zip(xyxy[np.isin(cls, list(PRIVACY_IDS))],
+                                       cls[np.isin(cls, list(PRIVACY_IDS))]):
+            privacy_rows.append((fidx, COCO_NAMES.get(int(c), str(c)), x1, y1, x2, y2))
         keep = np.ones(len(cls), bool)
         if det.get("suppress_riders"):
             keep &= _suppress_riders(xyxy, cls)
@@ -308,6 +362,8 @@ def run_tracking(cfg: Config, video: Path, out_csv: Path, device: str, log=print
     out_csv = Path(out_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
+    pd.DataFrame(privacy_rows, columns=PRIVACY_COLUMNS).round(1).to_csv(
+        out_csv.with_name("privacy_boxes.csv"), index=False)
     reg_info = {}
     if registrar is not None:
         from .registration import drift_px, save_registration

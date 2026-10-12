@@ -722,6 +722,11 @@ RMS. Real footage will be worse; that's what this check is for.
   are only meaningful within one video.
 * The overlay video (`videos/overlay.mp4`) is **off by default**. When you do render it, people
   are **blurred** unless you pass `--no-blur`. Don't share an unblurred overlay video.
+* **Blurring uses every detection, not just the tracks.** Tracking drops some boxes on purpose
+  (a person cut off by the bottom of the frame has no feet to measure); every person and
+  vehicle the detector sees is also written to `_working/privacy_boxes.csv`, and the blur uses
+  both. Runs tracked before this existed: `groundtrack privacy -c <site>.yaml --run <run>`,
+  then re-render the overlay video / package.
 * **Number plates** are blurred too, in the overlay videos and the in-situ images: the lower part
   of every vehicle close enough for its plate to be readable (`debug_video: blur_plates`, on by
   default). Like the people blur, it relies on the detections: a vehicle the detector missed
