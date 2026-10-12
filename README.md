@@ -552,7 +552,14 @@ view** (`plan_density_<group>`): e.g. person-seconds per m² divided by the seco
 watched, so a spot two clips filmed is not twice as busy and a spot nobody filmed stays blank. A
 view reaches as far as its calibration is trusted (`projection.max_range_m`), at most 150 m or
 10x the camera height. The clips are usually filmed one after
-another, not at once: the composite shows typical movement over the time they cover. Rough
+another, not at once: the composite shows typical movement over the time they cover. With
+several groups there is also a **master field** (`data/field_master.csv`,
+`houdini/vector_field_master.csv`, `images/plan_flowfield_master.png`): every group on one grid,
+with the pooled velocity of everything that moves (weighted by how much each group was seen),
+per-group columns (`people_vx`, `vehicles_speed`, ...) and the `dominant_group` of each cell.
+The image draws each group's streamlines in its colour (people blue, cyclists green, buses
+orange, vehicles red), and the Houdini and Grasshopper scripts use the master as their default
+field. Rough
 calibrations (`method_info.grade` in the calibration file) are included unless `--only-ok`.
 
 **Overlapping views.** Where two or more clips see the same ground, their vectors are pooled
