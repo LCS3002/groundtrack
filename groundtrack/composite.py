@@ -186,6 +186,33 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
 
 
 MASTER_ORDER = ("people", "cycles", "buses", "vehicles")    # drawn bottom -> top
+# streamlines on a site plan: clear lines, not a hatch (spacing, length in metres)
+SITE_LINES = dict(min_confidence=0.4, min_dominance=0.5, spacing_m=2.5, bold=1.0, arrow=0.35)
+
+
+def clip_mosaic(pts: pd.DataFrame, group: str, cell: float, smooth_m: float,
+                min_tracks: int = 3) -> list[pd.DataFrame]:
+    """Each clip's own flow field of one group, cut so every cell shows only the clip that saw
+    it most (highest weight). Every clip is coherent in itself (one stretch of time), so the
+    union covers all the movement that was registered; pooling the clips instead cancels out
+    wherever different moments moved differently (a busy square)."""
+    g = pts[(pts["group"] == group) & ~pts["predicted"].astype(bool)]
+    if g.empty:
+        return []
+    m = 3 * smooth_m
+    bounds = (int(np.floor((g["x"].min() - m) / cell)), int(np.floor((g["x"].max() + m) / cell)),
+              int(np.floor((g["y"].min() - m) / cell)), int(np.floor((g["y"].max() + m) / cell)))
+    fields = []
+    for _, c in g.groupby("clip"):
+        if c["track_id"].nunique() >= min_tracks:
+            fields.append(smooth_field(c, cell, smooth_m, float(c["dt"].median()),
+                                       bounds=bounds).set_index(["i", "j"]))
+    if not fields:
+        return []
+    w = pd.concat([f["weight"].rename(k) for k, f in enumerate(fields)], axis=1).fillna(0.0)
+    win = w.to_numpy().argmax(axis=1)
+    return [f.loc[f.index.intersection(w.index[win == k])].reset_index()
+            for k, f in enumerate(fields)]
 
 
 def master_field(pts: pd.DataFrame, groups, cell: float, smooth_m: float) -> pd.DataFrame:
@@ -251,7 +278,9 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
 
     # ---- flow field per group (each on its own speed scale)
     fc = float(cfg["field"]["cell_size_m"])
-    field_files = {}
+    field_files, mosaic = {}, {}
+    span = max(ext[1] - ext[0], ext[3] - ext[2])
+    min_len = float(np.clip(span * 0.03, 4.0, 10.0))
     for gname, rg in ranges.items():
         g = pts[pts["group"] == gname]
         if g["track_id"].nunique() < 5:
@@ -260,7 +289,10 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         fld.to_csv(data / f"field_grid_{gname}.csv", index=False)
         field_files[gname] = hou / f"vector_field_{gname}.csv"     # for Houdini / Grasshopper
         fld.to_csv(field_files[gname], index=False)
-        fl = flow_layer(fld, ext, (W, H), fc, rg, line_px=1.5 * plan_height_px / 2000)
+        # the image: every clip's own field (see clip_mosaic), in the speed colours
+        mosaic[gname] = clip_mosaic(pts, gname, fc, float(cfg["field"]["smooth_m"]))
+        fl = flow_layer([(f, None) for f in mosaic[gname]], ext, (W, H), fc, rg,
+                        line_px=1.5 * plan_height_px / 2000, min_len_m=min_len, **SITE_LINES)
         _save(_over(base, fl), images / f"plan_flowfield_{gname}.png")
         _save(fl, images / f"plan_flowfield_{gname}_layer.png")
 
@@ -272,10 +304,15 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         mf = master_field(pts, master_groups, fc, float(cfg["field"]["smooth_m"]))
         mf.to_csv(data / "field_master.csv", index=False)
         mf.to_csv(hou / "vector_field_master.csv", index=False)
-        # the image: the pooled field of everything that moves, smoother and drawn denser than
-        # the per-group plans (a site-wide plan), each line in the colour of the group that
-        # dominates where it passes
-        span = max(ext[1] - ext[0], ext[3] - ext[2])
+        # the image: every clip's own field of every group (clip_mosaic), in the group colours,
+        # so it shows all the registered movement
+        layer = flow_layer([(f, group_rgb(gname)) for gname in master_groups
+                            for f in mosaic.get(gname, [])], ext, (W, H), fc, (0.0, 1.0),
+                           line_px=1.5 * plan_height_px / 2000, min_len_m=min_len, **SITE_LINES)
+        _save(_over(base, layer), images / "plan_flowfield_master.png")
+        _save(layer, images / "plan_flowfield_master_layer.png")
+        # and the pooled field of everything that moves (one consistent field, as in the data),
+        # smoother and bolder, each line in the colour of the group that dominates there
         look = master_field(pts, master_groups, fc,
                             float(np.clip(span * 0.012, float(cfg["field"]["smooth_m"]), 4.0)))
         look = look.assign(palette_index=look["dominant_group"].map(
@@ -284,8 +321,8 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
                            min_dominance=0.5, line_px=1.5 * plan_height_px / 2000, spacing_m=1.3,
                            min_len_m=float(np.clip(span * 0.045, 4.0, 14.0)), bold=1.5,
                            palette=[group_rgb(g) for g in master_groups])
-        _save(_over(base, layer), images / "plan_flowfield_master.png")
-        _save(layer, images / "plan_flowfield_master_layer.png")
+        _save(_over(base, layer), images / "plan_flowfield_master_pooled.png")
+        _save(layer, images / "plan_flowfield_master_pooled_layer.png")
         log(f"  master field: {', '.join(master_groups)} on one grid ({len(mf)} cells)")
 
     # ---- where views overlap: do the clips agree on the movement? (per group)

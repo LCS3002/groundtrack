@@ -60,15 +60,18 @@ def _save(img: np.ndarray, path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- layers
-def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
+def flow_layer(field, ext, size, cell: float, speed_range,
                min_confidence: float = 0.5, min_dominance: float = 0.6,
                line_px: float = 1.6, colour=None, spacing_m: float | None = None,
-               min_len_m: float = 6.0, bold: float = 1.0, palette=None) -> np.ndarray:
+               min_len_m: float = 6.0, bold: float = 1.0, palette=None,
+               arrow: float = 1.0) -> np.ndarray:
     """Streamlines of the vector field on transparency (straight-alpha RGBA uint8), in the
     shared speed colours (or all in one `colour`, RGB 0..255). spacing_m: about how far apart
     the lines start (default ~3 m, denser on big plans); min_len_m: shorter lines are dropped;
-    bold: line width factor. palette: colours (RGB 0..255) indexed by the field's
+    bold: line width factor; arrow: arrowhead size factor. palette: colours (RGB 0..255) indexed by the field's
     "palette_index" column instead of the speed ramp (e.g. the dominant group of each cell).
+    field may also be a list of (field, colour) pairs, all drawn in one pass (e.g. every clip
+    of a site, each with its group colour).
 
     Drawn only where the field is well supported (confidence) and coherent (dominance:
     most movement in one direction); where streams cross, lines would invent swirls."""
@@ -76,23 +79,13 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize
+    from matplotlib.colors import ListedColormap, Normalize
 
     from .colors import cmap
     from .field import field_to_arrays
 
     W, H = size
-    if field.empty:
-        return np.zeros((H, W, 4), np.uint8)
-    xs, ys, U, V, S, C = field_to_arrays(field, cell)
-    weak = ~(C >= min_confidence) | ~np.isfinite(U) | ~np.isfinite(V)
-    if "dominance" in field:
-        D = np.ones_like(C)
-        D[field["j"].to_numpy() - int(field["j"].min()),
-          field["i"].to_numpy() - int(field["i"].min())] = field["dominance"].to_numpy()
-        weak |= D < min_dominance
-    Um = np.ma.array(np.nan_to_num(U), mask=weak)
-    Vm = np.ma.array(np.nan_to_num(V), mask=weak)
+    items = field if isinstance(field, list) else [(field, colour)]
     lo, hi = speed_range
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_alpha(0)
@@ -107,22 +100,34 @@ def flow_layer(field: pd.DataFrame, ext, size, cell: float, speed_range,
     density = (float(np.clip(span / (30 * spacing_m), 1.2, 12.0)) if spacing_m else
                float(np.clip(max(max(W, H) / 1000, span / 90), 1.2, 6.0)))
     minlength = float(np.clip(min_len_m / max(span, 1e-6), 0.01, 0.5))
-    if len(xs) > 1 and len(ys) > 1 and (~weak).sum() > 4:
+    for fld, col in items:
+        if fld is None or fld.empty:
+            continue
+        xs, ys, U, V, S, C = field_to_arrays(fld, cell)
+        weak = ~(C >= min_confidence) | ~np.isfinite(U) | ~np.isfinite(V)
+        jj = fld["j"].to_numpy() - int(fld["j"].min())
+        ii = fld["i"].to_numpy() - int(fld["i"].min())
+        if "dominance" in fld:
+            D = np.ones_like(C)
+            D[jj, ii] = fld["dominance"].to_numpy()
+            weak |= D < min_dominance
+        if len(xs) < 2 or len(ys) < 2 or (~weak).sum() <= 4:
+            continue
+        Um = np.ma.array(np.nan_to_num(U), mask=weak)
+        Vm = np.ma.array(np.nan_to_num(V), mask=weak)
         if palette is not None:
-            from matplotlib.colors import ListedColormap
-
             G = np.zeros_like(C)
-            G[field["j"].to_numpy() - int(field["j"].min()),
-              field["i"].to_numpy() - int(field["i"].min())] =                 field["palette_index"].fillna(0).to_numpy()
+            G[jj, ii] = fld["palette_index"].fillna(0).to_numpy()
             paint = dict(color=G, norm=Normalize(-0.5, len(palette) - 0.5),
                          cmap=ListedColormap([tuple(c / 255 for c in rgb) for rgb in palette]))
-        elif colour is not None:
-            paint = dict(color=tuple(c / 255 for c in colour))
+        elif col is not None:
+            paint = dict(color=tuple(c / 255 for c in col))
         else:
             paint = dict(color=np.nan_to_num(S), cmap=cmap(), norm=Normalize(lo, hi))
         ax.streamplot(xs, ys, Um, Vm, **paint,
                       linewidth=bold * pt * (0.8 + 1.2 * np.clip(C, 0, 1)),
-                      density=density, arrowsize=0.9 * line_px * bold, arrowstyle="-|>",
+                      density=density, arrowsize=0.9 * line_px * bold * arrow,
+                      arrowstyle="-|>",
                       minlength=minlength)
     fig.canvas.draw()
     rgba = np.asarray(fig.canvas.buffer_rgba(), np.uint8).copy()

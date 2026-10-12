@@ -89,3 +89,28 @@ def test_master_field_puts_every_group_on_one_grid(tmp_path):
     assert (out / "images/plan_flowfield_master_layer.png").exists()
     assert (out / "labels/legend_flow_master_light.png").exists()
     assert "vector_field_master.csv" in (out / "houdini/houdini_field.py").read_text()
+
+
+def test_clip_mosaic_keeps_each_clips_own_flow():
+    """Two clips of the same ground, filmed at different moments: one sees people walking east,
+    the other west. Pooled, the directions cancel; the mosaic keeps each clip's coherent flow
+    and every observed cell belongs to exactly one clip."""
+    from groundtrack.composite import clip_mosaic
+
+    rows = []
+    for clip, v, n0 in (("a", 1.3, 0), ("b", -1.3, 100)):
+        for k in range(6):
+            t = np.arange(150) / FPS
+            rows.append(pd.DataFrame({
+                "clip": clip, "track_id": n0 + k, "group": "people", "predicted": False,
+                "time_s": t, "dt": 1 / FPS, "x": ORIGIN[0] + v * t + (0 if v > 0 else 10),
+                "y": ORIGIN[1] + 20 + 0.6 * k + (0.3 if clip == "b" else 0), "vx": v, "vy": 0.0,
+                "speed": abs(v), "heading": 90.0 if v > 0 else 270.0}))
+    pts = pd.concat(rows, ignore_index=True)
+    parts = clip_mosaic(pts, "people", 1.0, 2.0)
+    assert len(parts) == 2
+    cells = [set(zip(f["i"], f["j"])) for f in parts]
+    assert not (cells[0] & cells[1])                       # one clip per cell
+    for f in parts:
+        strong = f[f["confidence"] > 0.5]
+        assert len(strong) and (np.sign(strong["vx"]).nunique() == 1)   # coherent per clip
