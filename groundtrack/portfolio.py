@@ -27,7 +27,7 @@ INK = (29, 29, 31)
 GREY = (112, 112, 118)
 HAIR = (206, 206, 210)
 CASING = (20, 20, 22)         # thin dark edge under every trail: reads on light and dark ground
-SOFTEN_PLAN = (0.8, 0.12)     # aerial: keep 80% of the saturation, lift 12% toward white
+SOFTEN_PLAN = (0.8, 0.0, 0.88)  # aerial: 80% of the saturation, 88% brightness (lines read)
 SOFTEN_INSITU = (0.9, 0.06)
 LEGEND_PITCH = 140             # plate: one speed legend row per group
 FONT_FILES = [r"C:\Windows\Fonts\bahnschrift.ttf", "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf",
@@ -103,12 +103,13 @@ def _trail_layer(shape, segments, width: float, ss: int | None = None,
     return np.dstack([rgb, a * 255]).clip(0, 255).astype(np.uint8)
 
 
-def _soften(rgb: np.ndarray, saturation: float, lift: float) -> np.ndarray:
-    """A colour image a little desaturated and lifted toward white, so coloured lines read."""
+def _soften(rgb: np.ndarray, saturation: float, lift: float, level: float = 1.0) -> np.ndarray:
+    """A colour image a little desaturated, lifted toward white and/or dimmed (level), so
+    coloured lines read on it."""
     f = rgb.astype(np.float32)
     g = f @ np.array([0.299, 0.587, 0.114], np.float32)
     f = g[..., None] + saturation * (f - g[..., None])
-    return f * (1 - lift) + 255 * lift
+    return (f * (1 - lift) + 255 * lift) * level
 
 
 def over(base: np.ndarray, rgba: np.ndarray) -> np.ndarray:

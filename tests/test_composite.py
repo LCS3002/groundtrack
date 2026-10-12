@@ -87,7 +87,7 @@ def test_master_field_puts_every_group_on_one_grid(tmp_path):
     cars = m[m["dominant_group"] == "vehicles"]
     assert (cars["vehicles_vx"].dropna() < 0).mean() > 0.9                # cars go west
     assert (out / "images/plan_flowfield_master_layer.png").exists()
-    assert (out / "labels/legend_flow_master_light.png").exists()
+    assert (out / "labels/legend_flow_master_pooled_light.png").exists()
     assert "vector_field_master.csv" in (out / "houdini/houdini_field.py").read_text()
 
 

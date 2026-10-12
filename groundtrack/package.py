@@ -64,11 +64,12 @@ def flow_layer(field, ext, size, cell: float, speed_range,
                min_confidence: float = 0.5, min_dominance: float = 0.6,
                line_px: float = 1.6, colour=None, spacing_m: float | None = None,
                min_len_m: float = 6.0, bold: float = 1.0, palette=None,
-               arrow: float = 1.0) -> np.ndarray:
+               arrow: float = 1.0, casing: float = 0.0) -> np.ndarray:
     """Streamlines of the vector field on transparency (straight-alpha RGBA uint8), in the
     shared speed colours (or all in one `colour`, RGB 0..255). spacing_m: about how far apart
     the lines start (default ~3 m, denser on big plans); min_len_m: shorter lines are dropped;
-    bold: line width factor; arrow: arrowhead size factor. palette: colours (RGB 0..255) indexed by the field's
+    bold: line width factor; arrow: arrowhead size factor; casing: opacity of a thin dark
+    edge around every line (0 = none), so thin lines read on light and busy ground. palette: colours (RGB 0..255) indexed by the field's
     "palette_index" column instead of the speed ramp (e.g. the dominant group of each cell).
     field may also be a list of (field, colour) pairs, all drawn in one pass (e.g. every clip
     of a site, each with its group colour).
@@ -140,6 +141,16 @@ def flow_layer(field, ext, size, cell: float, speed_range,
     plt.close(fig)
     if rgba.shape[:2] != (H, W):
         rgba = cv2.resize(rgba, (W, H), interpolation=cv2.INTER_AREA)
+    if casing > 0:
+        a = rgba[..., 3].astype(np.float32) / 255
+        r = max(1, int(round(0.6 * line_px)))
+        halo = cv2.GaussianBlur(cv2.dilate(a, np.ones((2 * r + 1, 2 * r + 1), np.uint8)),
+                                (0, 0), 0.6 * r)
+        under = np.dstack([np.full(a.shape + (3,), 18, np.float32),
+                           np.clip(casing * halo, 0, 1) * 255]).astype(np.uint8)
+        from .portfolio import stack_rgba
+
+        rgba = stack_rgba(under, rgba)
     return rgba
 
 

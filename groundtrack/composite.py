@@ -187,8 +187,8 @@ def overlap_agreement(clips: list[ClipRun], pts: pd.DataFrame, cfg: Config, ext,
 
 MASTER_ORDER = ("people", "cycles", "buses", "vehicles")    # drawn bottom -> top
 # streamlines on a site plan: clear lines, not a hatch (spacing, length in metres)
-SITE_LINES = dict(min_confidence=0.25, min_dominance=0.35, spacing_m=1.6, bold=0.35,
-                  arrow=0.6)          # thin, dense, continuous: like a single clip's field
+SITE_LINES = dict(min_confidence=0.25, min_dominance=0.35, spacing_m=1.6, bold=0.6,
+                  arrow=0.6, casing=0.55)    # dense, continuous, with a dark edge to read
 
 
 def clip_fields(pts: pd.DataFrame, group: str, cell: float, smooth_m: float,
@@ -312,12 +312,17 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
         mf = master_field(pts, master_groups, fc, float(cfg["field"]["smooth_m"]))
         mf.to_csv(data / "field_master.csv", index=False)
         mf.to_csv(hou / "vector_field_master.csv", index=False)
-        # the image: each group's continuous field (continuous_field) in its colour, so it
-        # shows all the registered movement as one flow per group
-        layer = flow_layer([(mosaic[gname], group_rgb(gname)) for gname in master_groups
-                            if gname in mosaic and not mosaic[gname].empty], ext, (W, H), fc,
-                           (0.0, 1.0), line_px=1.5 * plan_height_px / 2000, min_len_m=min_len,
-                           **SITE_LINES)
+        # the image: each group's continuous field (continuous_field), coloured by speed on
+        # that group's own scale (as its plan and legend), so it shows all the registered
+        # movement as one flow per group
+        layer = None
+        for gname in master_groups:
+            if gname not in mosaic or mosaic[gname].empty:
+                continue
+            fl = flow_layer(mosaic[gname], ext, (W, H), fc, ranges[gname],
+                            line_px=1.5 * plan_height_px / 2000, min_len_m=min_len,
+                            **SITE_LINES)
+            layer = fl if layer is None else pf.stack_rgba(layer, fl)
         _save(_over(base, layer), images / "plan_flowfield_master.png")
         _save(layer, images / "plan_flowfield_master_layer.png")
         # and the pooled field of everything that moves (one consistent field, as in the data),
@@ -415,9 +420,9 @@ def build_composite(clips: list[ClipRun], raster: GeoRaster | None, out_dir: Pat
                        density_rgb(u ** 0.5), v)
         legend_png(labels / f"legend_coverage_{v}.png", "SECONDS IN VIEW", "0", f"{smax:.0f} s",
                    coverage_rgb(u ** 0.5), v)
-        if master_groups:
-            group_key_png(labels / f"legend_flow_master_{v}.png", "FLOW  ·  ALL GROUPS",
-                          master_groups, v)
+        if master_groups:      # the pooled image colours lines by dominant group
+            group_key_png(labels / f"legend_flow_master_pooled_{v}.png",
+                          "FLOW  ·  DOMINANT GROUP", master_groups, v)
         scale_bar_png(labels / f"scale_bar_{v}.png", pf._nice(x1 - x0), W / (x1 - x0), v)
         north_arrow_png(labels / f"north_arrow_{v}.png", v)
     (labels / "title.txt").write_text("\n".join(x for x in (title, subtitle, credit and

@@ -585,8 +585,9 @@ The Houdini and Grasshopper scripts use the master as their default field.
 **Flow images of a composite** (`plan_flowfield_<group>`, `plan_flowfield_master`) draw one
 *continuous* field per group, built from all clips: each cell takes the velocity of the clip that
 saw it most. Each clip is one stretch of time and moves coherently, so the field is coherent
-everywhere and covers all the movement that was registered. The lines are thin and continuous,
-as in a single clip's flow field. The same fields are in `houdini/vector_field_<group>_continuous.csv`,
+everywhere and covers all the movement that was registered. Lines are continuous, as in a single
+clip's flow field, with a thin dark edge so they read on the aerial, and they are coloured by
+speed. In the master, each group is on its own speed scale (`legend_speed_<group>`). The same fields are in `houdini/vector_field_<group>_continuous.csv`,
 and the Houdini and Grasshopper scripts offer them as `<group>_continuous`. A field pooled over all clips cancels out wherever different moments moved
 differently: on the Trafalgar terrace, 26 clips pooled left almost nothing. The master image draws
 the groups in their colours: people blue, cyclists green, buses orange, vehicles red. The pooled
