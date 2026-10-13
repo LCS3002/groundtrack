@@ -383,6 +383,7 @@ async function renderRuns(box) {
   if (!d.images.length && !d.extras.length) det.append(h("div", { class: "note" }, "Not processed yet: Re-process builds the outputs from the tracked data."));
   if (d.plate) group("Plate", [h("div", { class: "thumbs", style: "margin-top: 0" }, tile(d.plate, name(d.plate)))]);
   group("images/  —  frameless", d.images.length ? [h("div", { class: "gallery" }, d.images.map(p => tile(p, name(p))))] : []);
+  group("images/process/  —  the process step by step (Process sequence)", d.process?.length ? [h("div", { class: "gallery" }, d.process.map(p => tile(p, name(p))))] : []);
   group("images/  —  layers on transparency", d.layers.length ? [h("div", { class: "gallery" }, d.layers.map(p => tile(p, name(p), "label")))] : []);
   group("labels/  —  legends, scale bar, north arrow", d.labels.length ? [h("div", { class: "gallery" }, d.labels.map(p => tile(p, name(p), "label")))] : []);
   group("videos/", d.videos.length ? [h("div", { class: "videos" }, d.videos.map(p => h("div", {},

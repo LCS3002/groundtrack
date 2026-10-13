@@ -264,6 +264,7 @@ class App:
         imgs = files(r.images, IMG_EXT)
         d["images"] = [q for q in imgs if not q.endswith("_layer.png")]
         d["layers"] = [q for q in imgs if q.endswith("_layer.png")]
+        d["process"] = files(r.images / "process", IMG_EXT)
         d["labels"] = files(r.labels, IMG_EXT)
         d["videos"] = files(r.videos, VID_EXT)
         d["extras"] = files(r.extras, IMG_EXT)
