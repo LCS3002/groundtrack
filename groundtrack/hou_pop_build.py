@@ -92,7 +92,10 @@ v@Cd = ramp(f@speed / max(smax, 1e-6));
 f@pscale = chf("dot_size");
 '''
 
-KILL_VEX = 'if (length(v@v) < chf("min_speed") && @age > 0.5) dead = 1;'
+KILL_VEX = """// outside the field (no cell nearby: coverage w = 0), or stalled
+string fld = "op:" + opfullpath("../../OUT_FIELD");
+if (volumesample(fld, "w", @P) < 1e-4 || (length(v@v) < chf("min_speed") && @age > 0.5))
+    dead = 1;"""
 
 
 def _lin(c):
