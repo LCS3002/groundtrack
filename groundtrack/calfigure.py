@@ -31,6 +31,16 @@ GUTTER_PX = 24
 MARGIN_M = 6.0               # aerial panels: around the seen ground, the camera and the points
 
 
+def seen_range(cfg: Config, h: Homography, default: float = 40.0) -> float:
+    """How far from the camera the pictures show the ground: the precise range the tracks
+    use (projection.max_range_m, a number or "auto"; the largest over the groups)."""
+    from .trajectories import max_range_for
+
+    r = [max_range_for(cfg, h, g) for g in cfg.groups]
+    r = [v for v in r if v is not None and np.isfinite(v)]
+    return float(max(r)) if r else default
+
+
 def seen_ground(h: Homography, size, max_range_m: float, cam, step: int = 8) -> np.ndarray:
     """Outline (E, N) of the ground the camera sees within max_range_m: the convex hull of
     the ground under every step-th pixel."""
@@ -122,9 +132,12 @@ def still_people(cfg: Config, img: np.ndarray, conf: float = 0.08) -> np.ndarray
     return np.column_stack([b[:, :2] - pad, b[:, 2:] + pad])
 
 
-def calibration_figure(cfg: Config, run_dir: Path, raster: GeoRaster, h: Homography,
-                       out_h: int = 1080, log=print) -> dict:
-    """Write the calibration panels of a run (see the module docstring); returns their paths."""
+def blurred_still(cfg: Config, run_dir: Path, frame: int, log=print):
+    """A video frame (BGR) with people and number plates blurred: the tracked ones (held as in
+    the videos) and anyone a full-resolution detection finds on it. Returns (image, the extra
+    boxes found on the still)."""
+    import json
+
     import pandas as pd
 
     from .debug_video import HOLD_S, blur_boxes, privacy_boxes, raw_all
@@ -132,12 +145,8 @@ def calibration_figure(cfg: Config, run_dir: Path, raster: GeoRaster, h: Homogra
     from .video import read_frame
 
     run = open_run(run_dir)
-    video = cfg.path("video")
-    frame = int(h.reference_frame or 0)
-    img = read_frame(video, frame)
-    if run.raw_tracks.exists():          # people and number plates blurred
-        import json
-
+    img = read_frame(cfg.path("video"), frame)
+    if run.raw_tracks.exists():
         fps = float(json.loads(run.meta.read_text()).get("fps", 25)) \
             if run.meta.exists() else 25.0
         dv = cfg.get("debug_video") or {}
@@ -145,13 +154,27 @@ def calibration_figure(cfg: Config, run_dir: Path, raster: GeoRaster, h: Homogra
                              bool(dv.get("blur_people", True)), bool(dv.get("blur_plates", True)),
                              int(round(HOLD_S * fps)))
         blur_boxes(img, hide.loc[hide["frame"] == frame, ["x1", "y1", "x2", "y2"]].to_numpy())
-    blur_boxes(img, still_people(cfg, img))     # and anyone the tracker missed on this still
+    else:
+        log("no tracked run: only the still's own detection blurs people - check the picture")
+    extra = still_people(cfg, img)
+    blur_boxes(img, extra)
+    return img, extra
+
+
+def calibration_figure(cfg: Config, run_dir: Path, raster: GeoRaster, h: Homography,
+                       out_h: int = 1080, log=print) -> dict:
+    """Write the calibration panels of a run (see the module docstring); returns their paths."""
+    from .layout import open_run
+
+    run = open_run(run_dir)
+    frame = int(h.reference_frame or 0)
+    img, _ = blurred_still(cfg, run_dir, frame, log)
     Hv, Wv = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     cam_par = getattr(h, "camera_params", None) or {}
     cam = (float(cam_par["E"]), float(cam_par["N"])) if cam_par.get("E") is not None else None
-    rng = float((cfg.get("projection") or {}).get("max_range_m") or 40)
+    rng = seen_range(cfg, h)
     outline = seen_ground(h, (Wv, Hv), rng, cam)
     lines = grid_lines(outline)
     pts = [p for p in h.points if p.get("inlier", True)]
@@ -267,3 +290,197 @@ def _caption_png(path: Path, text: str, variant: str, width: int = 1600) -> Path
         pf._text(d, (4, 4 + 40 * i), r, 28, "Light", ink)
     img.save(path)
     return path
+
+
+# --------------------------------------------------------------------------- process sequence
+SEQUENCE = (
+    ("01_footage", "The footage: one frame of the clip (people blurred)."),
+    ("02_calibration", ("Calibration: ground points clicked in the video (magenta) and a {grid} m "
+                        "grid on the ground, drawn through the fitted camera.")),
+    ("02b_calibration_plan", ("Calibration on the plan: the same points on the aerial, the "
+                              "ground the camera sees (white grid) and the camera.")),
+    ("03_tracked", ("Tracking: every person detected and followed from frame to frame, with "
+                    "their trail so far.")),
+    ("04_projection", ("Projection: the frame laid onto the plan through the calibration, with "
+                       "the tracks so far in plan coordinates (dots: positions at this moment).")),
+    ("05_tracks", "Analysis: all tracks of the clip on the plan, coloured by speed."),
+    ("06_flowfield", ("The flow field: streamlines of the movement, colour = speed, width = how "
+                      "much data supports it.")),
+    ("07_density", "Occupancy: how long people were at each place (log scale)."),
+)
+
+
+def process_sequence(cfg: Config, run_dir: Path, raster: GeoRaster, h: Homography,
+                     at_s: float = 2.0, out_h: int = 1080, log=print) -> dict:
+    """The whole process of a clip, one image per step, at one moment (at_s seconds into the
+    run), written to <run>/images/process/: 01 footage, 02 calibration (video), 02b
+    calibration (plan), 03 tracked, 04 projection, 05 tracks, 06 flow field, 07 density, an
+    overview of all, and the captions (labels/process_captions.txt). The video steps share the
+    frame; the plan steps share the extent and size of the run's plan images (they stack)."""
+    import json
+    import shutil
+
+    import pandas as pd
+
+    from . import original as og
+    from .layout import open_run
+    from .registration import load_registration
+    from .video import read_frame
+    from .visuals import _extent
+
+    run = open_run(run_dir)
+    meta = json.loads(run.meta.read_text(encoding="utf-8"))
+    fps = float(meta["fps"])
+    start = int(meta.get("start_frame", 0))
+    frame = start + int(round(at_s * fps))
+    out = run.images / "process"
+    out.mkdir(parents=True, exist_ok=True)
+    paths: dict = {}
+
+    def save(name, im):
+        paths[name] = out / f"{name}.png"
+        Image.fromarray(np.asarray(im).clip(0, 255).astype(np.uint8)).save(paths[name])
+
+    img, extra = blurred_still(cfg, run_dir, frame, log)
+    Hv, Wv = img.shape[:2]
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    reg = load_registration(run.registration)[0] if run.registration.exists() else None
+    to_raw = np.linalg.inv(reg[frame]) if reg is not None and frame in reg else np.eye(3)
+
+    def raw_px(uv):         # calibration-frame pixels -> this frame's pixels (camera motion)
+        uv = np.asarray(uv, float).reshape(-1, 2)
+        res = np.full_like(uv, np.nan)
+        ok = np.isfinite(uv).all(axis=1)
+        if ok.any():
+            res[ok] = cv2.perspectiveTransform(uv[ok][None], to_raw)[0]
+        return res
+
+    s = out_h / Hv
+    lw = max(1.2, 1.6 * out_h / 1080)
+    rad = 17 * out_h / 1080
+    small = (int(round(Wv * s)), out_h)
+
+    # 01 footage
+    save("01_footage", cv2.resize(rgb, small, interpolation=cv2.INTER_AREA))
+
+    # 02 calibration in the video
+    cam_par = getattr(h, "camera_params", None) or {}
+    cam = (float(cam_par["E"]), float(cam_par["N"])) if cam_par.get("E") is not None else None
+    rng = seen_range(cfg, h)
+    outline = seen_ground(h, (Wv, Hv), rng, cam)
+    lines = grid_lines(outline)
+    pts = [p for p in h.points if p.get("inlier", True)]
+    uv = np.array([[p["u"], p["v"]] for p in pts], float).reshape(-1, 2)
+    en = np.array([[p["E"], p["N"]] for p in pts], float).reshape(-1, 2)
+    labels = [str(k + 1) for k in range(len(pts))]
+    vid = cv2.resize(rgb, small, interpolation=cv2.INTER_AREA)
+    vid = pf.over(vid, _line_layer(vid.shape[:2], [raw_px(h.to_pixel(ln)) * s for ln in lines],
+                                   lw, GRID_RGB, 0.7))
+    save("02_calibration", _markers(vid, raw_px(uv) * s, labels, rad))
+
+    # 03 tracked: that frame of the overlay video (trails so far, boxes; people blurred)
+    ov = run.videos / "overlay_clean.mp4"
+    if ov.exists():
+        from .debug_video import blur_boxes
+
+        tr = read_frame(ov, frame - start)
+        blur_boxes(tr, extra)                       # the still's extra people too
+        save("03_tracked", cv2.resize(cv2.cvtColor(tr, cv2.COLOR_BGR2RGB), small,
+                                      interpolation=cv2.INTER_AREA))
+    else:
+        log("no overlay video (render it with debug-video): step 03 left out")
+
+    # the plan steps: the extent and size of the run's plan images
+    points = pd.read_csv(run.points)
+    ext = _extent(points, raster, cfg)
+    pk = cfg.get("package") or {}
+    W, H = pf.plan_size(ext, int(pk.get("plan_height_px", 2400)))
+    k = H / (ext[3] - ext[2])
+    base = og.grey_base(raster, ext, (W, H), float(cfg["visuals"]["basemap_brightness"]))
+    prad, plw = rad * H / out_h * 0.8, lw * H / out_h
+
+    def to_plan(xy):
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        return np.column_stack([(xy[:, 0] - ext[0]) * k, (ext[3] - xy[:, 1]) * k])
+
+    edge = [to_plan(np.vstack([outline, outline[:1]]))]
+    if cam:
+        ang = np.unwrap(np.arctan2(outline[:, 1] - cam[1], outline[:, 0] - cam[0]))
+        for v in (outline[np.argmin(ang)], outline[np.argmax(ang)]):
+            edge.append(to_plan([cam, v]))
+    edge_l = _line_layer((H, W), edge, plw * 1.6, GRID_RGB, 0.95)
+
+    # 02b calibration on the plan
+    plan = pf.over(pf.over(base, _line_layer((H, W), [to_plan(ln) for ln in lines], plw,
+                                             GRID_RGB, 0.6)), edge_l)
+    if cam:
+        plan = _camera(plan.clip(0, 255).astype(np.uint8), to_plan([cam])[0], prad * 0.7)
+    save("02b_calibration_plan", _markers(plan, to_plan(en), labels, prad))
+
+    # 04 projection: the frame on the plan, the tracks up to this moment, positions now
+    cols, rows = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+    world = np.column_stack([ext[0] + cols.ravel() / k, ext[3] - rows.ravel() / k])
+    inside = MplPath(outline).contains_points(world)
+    uvw = np.full((len(world), 2), -1.0)
+    uvw[inside] = raw_px(h.to_pixel(world[inside]))
+    uvw[~np.isfinite(uvw).all(axis=1)] = -1.0
+    mx = uvw[:, 0].reshape(H, W).astype(np.float32)
+    my = uvw[:, 1].reshape(H, W).astype(np.float32)
+    warped = cv2.remap(rgb, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    m = inside.reshape(H, W) & (mx >= 0) & (my >= 0) & (mx < Wv) & (my < Hv)
+    a = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 1.5)[..., None]
+    proj = base * (1 - a) + warped.astype(np.float32) * a
+    ranges = pf.group_ranges(cfg, points)
+    t_now = float(points.loc[(points["frame"] - frame).abs().idxmin(), "time_s"]) \
+        if len(points) else 0.0
+    sofar = points[points["time_s"] <= t_now]
+    proj = pf.over(proj, og.tracks_layer(sofar, ext, (W, H), ranges,
+                                         float(cfg["visuals"]["line_width"]), False))
+    proj = pf.over(proj, edge_l).clip(0, 255).astype(np.uint8)
+    if cam:
+        proj = _camera(proj, to_plan([cam])[0], prad * 0.7)
+    now = sofar[sofar["time_s"] == t_now]
+    for (x, y), sp, g in zip(to_plan(now[["x", "y"]].to_numpy()), now["speed"], now["group"]):
+        lo, hi = ranges.get(g, (0.0, 2.5))
+        c = tuple(int(v) for v in pf.speed_rgb(sp, lo, hi))
+        cv2.circle(proj, (int(x), int(y)), int(prad * 0.55), (20, 20, 22), -1, cv2.LINE_AA)
+        cv2.circle(proj, (int(x), int(y)), int(prad * 0.38), c, -1, cv2.LINE_AA)
+    save("04_projection", proj)
+
+    # 05-07: the run's plan images, as they are
+    for name, src in (("05_tracks", "plan_tracks.png"), ("06_flowfield", "plan_flowfield.png"),
+                      ("07_density", "plan_density.png")):
+        if (run.images / src).exists():
+            paths[name] = out / f"{name}.png"
+            shutil.copy2(run.images / src, paths[name])
+
+    # an overview: the video steps in one row, the plan steps in the next (no text)
+    g = GUTTER_PX
+    vids = [np.asarray(Image.open(paths[n]).convert("RGB")) for n in
+            ("01_footage", "02_calibration", "03_tracked") if n in paths]
+    plans = [np.asarray(Image.open(paths[n]).convert("RGB")) for n in
+             ("02b_calibration_plan", "04_projection", "05_tracks", "06_flowfield", "07_density")
+             if n in paths]
+
+    def row(ims, height):
+        gap = np.full((height, g, 3), 255, np.uint8)
+        ims = [cv2.resize(i, (int(round(i.shape[1] * height / i.shape[0])), height),
+                          interpolation=cv2.INTER_AREA) for i in ims]
+        return np.hstack([x for i in ims for x in (i, gap)][:-1])
+
+    top = row(vids, out_h)
+    ph = int(round((top.shape[1] - g * (len(plans) - 1)) / sum(p.shape[1] / p.shape[0]
+                                                               for p in plans)))
+    bottom = row(plans, ph)
+    wmax = max(top.shape[1], bottom.shape[1])
+    top, bottom = (np.pad(r, ((0, 0), (0, wmax - r.shape[1]), (0, 0)), constant_values=255)
+                   for r in (top, bottom))
+    save("00_overview", np.vstack([top, np.full((g, wmax, 3), 255, np.uint8), bottom]))
+
+    run.labels.mkdir(parents=True, exist_ok=True)
+    cap = [f"{cfg.site}, {at_s:g} s into the clip (frame {frame}). People blurred."]
+    cap += [f"{n}: " + t.format(grid=f"{GRID_M:g}") for n, t in SEQUENCE if n in paths]
+    paths["captions"] = run.labels / "process_captions.txt"
+    paths["captions"].write_text("\n".join(cap) + "\n", encoding="utf-8")
+    log(f"process sequence: {out}")
+    return paths

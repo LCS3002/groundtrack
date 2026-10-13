@@ -367,6 +367,8 @@ async function renderRuns(box) {
     h("button", { onclick: () => startJob("rhino", {}, state.run) }, "Rhino + Grasshopper"),
     h("button", { title: "the video with the clicked points and a ground grid, next to the aerial: to show how the clip was calibrated",
       onclick: () => startJob("calibration-picture", {}, state.run) }, "Calibration picture"),
+    h("button", { title: "one image per step at one moment: footage, calibration, tracked, projection, tracks, flow field, density (images/process/)",
+      onclick: () => { const t = prompt("Which moment? Seconds into the clip:", "2"); if (t !== null && t.trim() !== "" && !isNaN(+t)) startJob("process-sequence", { at: +t }, state.run); } }, "Process sequence"),
     h("button", { title: "for a handheld clip whose camera moved: measures the camera motion, then Re-process",
       onclick: () => startJob("stabilize", {}, state.run) }, "Stabilise camera motion"),
     h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder")));

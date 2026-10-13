@@ -176,6 +176,26 @@ the video laid onto the aerial. Each panel is also saved on its own, and the cap
 separate label. People are blurred: the tracked ones, plus anyone a full-resolution detection
 finds on that still.
 
+**The whole process at one moment:**
+`groundtrack process-sequence -c sites/clip.yaml --run v1 --at 2` (or "Process sequence" in the
+UI) writes one image per step to `images/process/`:
+
+| Image | Step |
+| --- | --- |
+| `01_footage` | the frame `--at` seconds in |
+| `02_calibration` | the clicked points and the ground grid on that frame |
+| `02b_calibration_plan` | the same on the plan, with the camera |
+| `03_tracked` | the overlay video at that moment |
+| `04_projection` | the frame laid onto the plan with the tracks so far, dots = positions at that moment |
+| `05_tracks` | all tracks on the plan |
+| `06_flowfield` | the flow field |
+| `07_density` | the occupancy |
+| `00_overview` | everything together |
+
+The captions are in `labels/process_captions.txt`. The video steps share the frame, and camera
+motion is followed. The plan steps share the extent and size of the run's plan images, so they
+stack.
+
 **Ground on several levels: `terrain`.** A homography maps one flat plane. Where people walk on
 more than one level, that breaks badly: Trafalgar Square's north terrace is 3 m above the
 square, and from the gallery steps a person on the terrace, projected onto the square's plane,

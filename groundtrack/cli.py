@@ -287,6 +287,20 @@ def cmd_calibration_picture(args):
                        out_h=args.height)
 
 
+def cmd_process_sequence(args):
+    """images/process/: the whole process of a run at one moment, one image per step."""
+    from .calfigure import process_sequence
+    from .geo import load_geotiff
+    from .homography import Homography
+    from .layout import open_run
+
+    cfg = _cfg(args)
+    run_dir = _run_dir_arg(cfg, args.run)
+    raster = load_geotiff(cfg.path("geotiff"), max_dim=8000)
+    process_sequence(cfg, run_dir, raster, Homography.load(open_run(run_dir).homography_used),
+                     at_s=args.at, out_h=args.height)
+
+
 def cmd_package(args):
     from .geo import load_geotiff
     from .package import build_package
@@ -504,6 +518,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
     s.add_argument("--height", type=int, default=1080, help="panel height in pixels")
     s.set_defaults(func=cmd_calibration_picture)
+
+    s = common(sub.add_parser("process-sequence",
+                              help="the whole process at one moment: footage, calibration, "
+                                   "tracked, projection, tracks, flow field, density"))
+    s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
+    s.add_argument("--at", type=float, default=2.0, help="seconds into the run")
+    s.add_argument("--height", type=int, default=1080, help="video panel height in pixels")
+    s.set_defaults(func=cmd_process_sequence)
 
     s = common(sub.add_parser("package", help="frameless images + labels/metrics for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")

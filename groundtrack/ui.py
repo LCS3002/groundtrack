@@ -340,9 +340,11 @@ class App:
             if opts.get("debug_video"):
                 args.append("--debug-video")
         elif kind in ("process", "package", "debug-video", "stabilize", "rhino",
-                      "calibration-picture"):
+                      "calibration-picture", "process-sequence"):
             self._run_dir(cfg, run)
             args = [kind, "-c", rel, "--run", run]
+            if kind == "process-sequence":
+                args += ["--at", str(float(opts.get("at", 2.0)))]
             if kind == "process" and opts.get("debug_video"):
                 args.append("--debug-video")
         elif kind == "calibrate":
