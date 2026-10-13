@@ -168,6 +168,14 @@ plaza, this was the difference between calibrations that would not converge and 
 `calibrate` also writes `<name>_check_video.jpg`: the map projected into your video, which is
 the most readable check for oblique views.
 
+**A picture of the calibration, to show the process:**
+`groundtrack calibration-picture -c sites/clip.yaml --run v1` (or "Calibration picture" in the
+UI). It writes `images/calibration.png` with three panels: the video frame with the clicked
+points and a 2 m ground grid, the aerial with the same points, grid and the camera's view, and
+the video laid onto the aerial. Each panel is also saved on its own, and the caption is a
+separate label. People are blurred: the tracked ones, plus anyone a full-resolution detection
+finds on that still.
+
 **Ground on several levels: `terrain`.** A homography maps one flat plane. Where people walk on
 more than one level, that breaks badly: Trafalgar Square's north terrace is 3 m above the
 square, and from the gallery steps a person on the terrace, projected onto the square's plane,

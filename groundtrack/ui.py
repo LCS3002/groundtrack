@@ -339,7 +339,8 @@ class App:
                 args += ["--max-frames", str(int(opts["max_frames"]))]
             if opts.get("debug_video"):
                 args.append("--debug-video")
-        elif kind in ("process", "package", "debug-video", "stabilize", "rhino"):
+        elif kind in ("process", "package", "debug-video", "stabilize", "rhino",
+                      "calibration-picture"):
             self._run_dir(cfg, run)
             args = [kind, "-c", rel, "--run", run]
             if kind == "process" and opts.get("debug_video"):

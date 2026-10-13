@@ -273,6 +273,20 @@ def cmd_rhino(args):
     write_rhino(run.root, cfg, h.origin, h.ground_z_m, cameras=cams)
 
 
+def cmd_calibration_picture(args):
+    """images/calibration*.png: the calibration of a run, to show the process."""
+    from .calfigure import calibration_figure
+    from .geo import load_geotiff
+    from .homography import Homography
+    from .layout import open_run
+
+    cfg = _cfg(args)
+    run_dir = _run_dir_arg(cfg, args.run)
+    raster = load_geotiff(cfg.path("geotiff"), max_dim=8000)
+    calibration_figure(cfg, run_dir, raster, Homography.load(open_run(run_dir).homography_used),
+                       out_h=args.height)
+
+
 def cmd_package(args):
     from .geo import load_geotiff
     from .package import build_package
@@ -484,6 +498,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = common(sub.add_parser("rhino", help="Rhino .3dm + Grasshopper script for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
     s.set_defaults(func=cmd_rhino)
+
+    s = common(sub.add_parser("calibration-picture",
+                              help="the calibration of a run as a picture (points, grid, aerial)"))
+    s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
+    s.add_argument("--height", type=int, default=1080, help="panel height in pixels")
+    s.set_defaults(func=cmd_calibration_picture)
 
     s = common(sub.add_parser("package", help="frameless images + labels/metrics for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")

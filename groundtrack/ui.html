@@ -365,6 +365,8 @@ async function renderRuns(box) {
     h("button", { onclick: () => startJob("package", {}, state.run) }, "Redraw images + plate"),
     h("button", { onclick: () => startJob("debug-video", {}, state.run) }, "Overlay video"),
     h("button", { onclick: () => startJob("rhino", {}, state.run) }, "Rhino + Grasshopper"),
+    h("button", { title: "the video with the clicked points and a ground grid, next to the aerial: to show how the clip was calibrated",
+      onclick: () => startJob("calibration-picture", {}, state.run) }, "Calibration picture"),
     h("button", { title: "for a handheld clip whose camera moved: measures the camera motion, then Re-process",
       onclick: () => startJob("stabilize", {}, state.run) }, "Stabilise camera motion"),
     h("button", { onclick: () => api("/api/open", { path: d.path }) }, "Open folder")));
