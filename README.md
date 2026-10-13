@@ -708,6 +708,36 @@ measured tracks and the particles all line up.
 Composites (`groundtrack composite`) have the same two scripts in their `houdini/` folder, with
 `vector_field_<group>.csv` of all clips together.
 
+### A ready particle scene per site, with modules (`houdini-pop`)
+
+```bash
+groundtrack houdini-pop --site plaza --composite <composite folder> \
+    --clips <clip folder> <clip folder> ... --out <kit folder>
+```
+
+This writes a kit folder holding `<site>_pop.hipnc` (`.hip` / `.hiplc` with other licences),
+`fields/*.csv`, `modules.json` and the builder `hou_pop_build.py`. Houdini must be installed;
+it is found under `C:\Program Files\Side Effects Software` or via `HFS`. `--no-build` writes the
+files only.
+
+The scene has one object per **module**: `<site>_whole` (the combined field) and one per clip.
+Each module chains:
+1. `field`: a group menu (all / people / vehicles ...), minimum confidence, and emitter seeds.
+2. `place`: move / rotate / scale the module; its particles follow.
+3. `sim`: a POP network. POP Source emits at seeds weighted by where people / vehicles were.
+   POP Advect by Volumes makes particles take the field's velocity. POP Wind adds turbulence
+   (bypassed at first). POP Kill removes particles outside the field.
+4. `particles`: coloured by speed on each group's own scale.
+5. `trails`: one line per particle id.
+
+The object `combined` merges the placed modules listed in its Object Merge. Where they overlap,
+their fields blend as a density-weighted average (`sum(w v) / sum(w)`), so moving modules over
+each other shows how the flows meet.
+
+All modules of a site share its origin, so the clips sit on the whole exactly. Checked in
+Houdini 21 (hython): particles move at the field's speeds (plaza 1.05 m/s against 1.05 in the
+field), stay inside it, and their trails follow the measured flow.
+
 ### Rhino 8 and Grasshopper (`rhino/`)
 
 Every run and every composite also gets a `rhino/` folder (`groundtrack rhino -c ... --run ...`

@@ -301,6 +301,16 @@ def cmd_process_sequence(args):
                      at_s=args.at, out_h=args.height)
 
 
+def cmd_houdini_pop(args):
+    """A Houdini POP kit of a site: the combined field and every clip's field as modules."""
+    from .houdini_pop import build_scene, prepare_kit
+
+    kit = prepare_kit(args.site, Path(args.composite), [Path(c) for c in args.clips],
+                      Path(args.out))
+    if not args.no_build:
+        build_scene(kit)
+
+
 def cmd_package(args):
     from .geo import load_geotiff
     from .package import build_package
@@ -526,6 +536,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--at", type=float, default=2.0, help="seconds into the run")
     s.add_argument("--height", type=int, default=1080, help="video panel height in pixels")
     s.set_defaults(func=cmd_process_sequence)
+
+    s = sub.add_parser("houdini-pop", help="Houdini particle scene: a site's combined field "
+                                           "and each clip's field as modules")
+    s.add_argument("--site", required=True, help="name, e.g. plaza")
+    s.add_argument("--composite", required=True, help="the site's composite folder")
+    s.add_argument("--clips", nargs="*", default=[], help="clip folders (run or results)")
+    s.add_argument("--out", required=True, help="kit folder to write")
+    s.add_argument("--no-build", action="store_true", help="only the files, no .hip")
+    s.set_defaults(func=cmd_houdini_pop)
 
     s = common(sub.add_parser("package", help="frameless images + labels/metrics for a run"))
     s.add_argument("--run", default="latest", help="run folder, run name, or 'latest'")
