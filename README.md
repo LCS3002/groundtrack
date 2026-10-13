@@ -768,6 +768,11 @@ RMS. Real footage will be worse; that's what this check is for.
   a window up to 4x longer, as a local straight line (`cleaning.radial_smoothing`). On that clip
   the share of impossibly fast walkers at 15-30 m fell from 48 % to 33 %. On a well-filmed clip
   it fell from 6 % to 1 %.
+* **Bus passengers are dropped.** People seen through bus or car windows move at the vehicle's
+  speed. A "person" track whose box sits inside a vehicle's box for 60 % or more of its frames
+  is a passenger and is removed (`cleaning.drop_passengers`). People walking past a vehicle
+  overlap it only briefly (10-20 % of their frames). On the Trafalgar clips this removed 18-31
+  passenger tracks per busy street clip.
 * **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
   markings to ~10 cm. Every run with vehicles compares each long, straight track with the
   lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as

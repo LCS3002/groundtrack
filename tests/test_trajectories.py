@@ -351,3 +351,18 @@ def test_radial_smoothing_removes_depth_wobble():
     err0 = np.abs(np.hypot(vx0, vy0) - 1.4)[15:-15].mean()
     err1 = np.abs(np.hypot(vx1, vy1) - 1.4)[15:-15].mean()
     assert err1 < 0.3 * err0 and err1 < 0.05
+
+
+def test_passengers_inside_a_bus_are_dropped():
+    """A person whose box sits inside a bus box nearly all the time is a passenger; one who
+    walks past the bus (inside briefly) is a pedestrian."""
+    from groundtrack.trajectories import passenger_tracks
+
+    rows = []
+    for f in range(30):
+        rows.append((9, "bus", f, 100 + 5 * f, 200, 400 + 5 * f, 420))          # moving bus
+        rows.append((1, "person", f, 200 + 5 * f, 230, 230 + 5 * f, 300))       # in a window
+        x = 50 + 40 * f                                                       # walks past
+        rows.append((2, "person", f, x, 300, x + 30, 380))
+    raw = pd.DataFrame(rows, columns=["track_id", "class", "frame", "x1", "y1", "x2", "y2"])
+    assert passenger_tracks(raw) == {1}

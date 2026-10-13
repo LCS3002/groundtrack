@@ -113,6 +113,7 @@ DEFAULTS: dict[str, Any] = {
         "stitch_max_gap_s": 2.0,
         "smooth_polyorder": 2,
         "radial_smoothing": True,  # smooth depth (along the view ray) more than sideways
+        "drop_passengers": True,   # people inside a bus / car box most of the time: passengers
         "min_moving_speed": 0.3,  # m/s below which heading is held from the last moving sample
         "recover_occluded_feet": True,  # rebuild foot points of boxes squished by occlusion
         "squish_ratio": 0.8,      # box shorter than this x its normal height = squished

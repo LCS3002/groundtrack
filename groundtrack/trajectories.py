@@ -357,6 +357,31 @@ def max_range_for(cfg: Config, h: Homography, group: str) -> float | None:
 
 
 # --------------------------------------------------------------------------- pipeline
+PASSENGER_SHARE = 0.6     # a person inside a vehicle's box this often is a passenger
+VEHICLE_BOXES = ("bus", "car", "truck", "train")
+
+
+def passenger_tracks(raw: pd.DataFrame, share: float = PASSENGER_SHARE) -> set:
+    """Person tracks that sit inside a vehicle's box (same frame) for most of their life:
+    passengers seen through bus / car windows, who move at the vehicle's speed. People
+    walking past a vehicle overlap it only briefly (~10-20 % of their frames)."""
+    veh = raw[raw["class"].isin(VEHICLE_BOXES)]
+    ppl = raw[raw["class"] == "person"]
+    if veh.empty or ppl.empty:
+        return set()
+    boxes = {f: g[["x1", "y1", "x2", "y2"]].to_numpy(float) for f, g in veh.groupby("frame")}
+    cx = ((ppl["x1"] + ppl["x2"]) / 2).to_numpy()
+    cy = ((ppl["y1"] + ppl["y2"]) / 2).to_numpy()
+    inside = np.zeros(len(ppl), bool)
+    for k, f in enumerate(ppl["frame"].to_numpy()):
+        B = boxes.get(f)
+        if B is not None:
+            inside[k] = bool(((B[:, 0] <= cx[k]) & (cx[k] <= B[:, 2])
+                              & (B[:, 1] <= cy[k]) & (cy[k] <= B[:, 3])).any())
+    frac = pd.Series(inside, index=ppl.index).groupby(ppl["track_id"]).mean()
+    return set(frac.index[frac >= share])
+
+
 def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, stride: int = 1,
                    lens: Lens | None = None, log=print, registration: dict | None = None
                    ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -372,6 +397,11 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
     classes = assign_track_classes(raw)
     raw = raw[raw["track_id"].isin(classes.index)].copy()
     raw["class"] = raw["track_id"].map(classes)
+    if clean.get("drop_passengers", True):
+        pas = passenger_tracks(raw)
+        if pas:
+            log(f"  {len(pas)} 'person' tracks inside a vehicle (passengers) dropped")
+            raw = raw[~raw["track_id"].isin(pas)]
     raw = raw[raw["class"].isin(cfg.classes)]
     uv = None
     if clean.get("recover_occluded_feet", True):
