@@ -330,21 +330,24 @@ def test_far_samples_kept_and_flagged(cam, ground_points, cfg):
 
 
 def test_radial_smoothing_removes_depth_wobble():
-    """A walker 25 m from a 2 m high camera, foot points wobbling 0.3 m in depth (one pixel)
-    and 0.03 m sideways: smoothing depth more than sideways gets the speed right, the plain
-    smoothing does not."""
+    """A walker 25 m from a 2 m high camera, foot points wobbling 0.3 m in depth (about a
+    pixel; box jitter lasts several frames, so the wobble is correlated) and 0.03 m sideways:
+    smoothing depth more than sideways gets the speed right, the plain smoothing does not."""
+    from scipy.ndimage import gaussian_filter1d
+
     from groundtrack.trajectories import smooth_radial
 
-    rng = np.random.default_rng(1)
+    rng = np.random.default_rng(0)
     t = np.arange(0, 4, DT)
     cam = {"E": 0.0, "N": 0.0, "height_m": 2.0}
     x, y = -2.8 + 1.4 * t, np.full_like(t, 25.0)           # walking across the view, east
     r, th = np.hypot(x, y), np.arctan2(y, x)
-    r = r + rng.normal(0, 0.3, len(t))
+    wobble = gaussian_filter1d(rng.normal(0, 1, len(t)), 6)
+    r = r + wobble * 0.3 / wobble.std()
     th = th + rng.normal(0, 0.03 / 25, len(t))
     xn, yn = r * np.cos(th), r * np.sin(th)
     _, _, vx0, vy0 = smooth_and_differentiate(xn, yn, DT, 1.0)
     _, _, vx1, vy1 = smooth_radial(xn, yn, DT, 1.0, cam)
     err0 = np.abs(np.hypot(vx0, vy0) - 1.4)[15:-15].mean()
     err1 = np.abs(np.hypot(vx1, vy1) - 1.4)[15:-15].mean()
-    assert err1 < 0.5 * err0 and err1 < 0.25
+    assert err1 < 0.3 * err0 and err1 < 0.05
