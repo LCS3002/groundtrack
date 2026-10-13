@@ -461,6 +461,13 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
             log(f"  {len(pas)} 'person' tracks inside a vehicle (passengers) dropped")
             raw = raw[~raw["track_id"].isin(pas)]
     raw["feet_hidden"] = feet_hidden(raw)
+    if str(clean.get("hidden_feet", "keep")).lower() == "bridge":
+        # positions only where the feet are seen; hidden spans are interpolated like any gap
+        # (more accurate speeds in crowds, fewer tracks: short visible pieces drop out)
+        n = int(raw["feet_hidden"].sum())
+        if n:
+            log(f"  {n} detections with hidden feet left out, bridged from the visible ones")
+            raw = raw[~raw["feet_hidden"]]
     raw = raw[raw["class"].isin(cfg.classes)]
     uv = None
     if clean.get("recover_occluded_feet", True):

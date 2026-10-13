@@ -847,6 +847,17 @@ RMS. Real footage will be worse; that's what this check is for.
   ~20 % of their "people" read faster than 2.5 m/s. Clips filmed from higher up show ~5 %.
   This is a limit of the footage, not of the calibration: the people heights there are
   consistent, and no fit can see feet that are hidden. A higher camera avoids it.
+  `cleaning.hidden_feet: bridge` leaves those detections out and interpolates across them
+  from the frames where the feet are seen. Speeds get more accurate but tracks are lost, so it
+  is off by default (`keep`). Measured:
+
+  | Clip | People towards / away from the camera | Faster than 2.5 m/s | People tracks |
+  | --- | --- | --- | --- |
+  | 6354 | 2.34 → 1.58 m/s | 22 → 17 % | 82 → 30 |
+  | 6376 | 1.49 → 1.31 m/s | 5 → 4 % | 248 → 210 |
+  | plaza1 | 1.42 → 1.39 m/s | 4 → 2 % | 75 → 66 |
+
+  6355 does not improve.
 * **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
   markings to ~10 cm. Every run with vehicles compares each long, straight track with the
   lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as

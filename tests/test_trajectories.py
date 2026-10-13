@@ -401,3 +401,23 @@ def test_feet_hidden_behind_a_nearer_person():
         (6, "car", 0, 650, 160, 900, 260),
     ], columns=["track_id", "class", "frame", "x1", "y1", "x2", "y2"])
     assert feet_hidden(raw).tolist() == [True, False, False, False, False, False]
+
+
+def test_hidden_feet_bridged(cam, ground_points, cfg):
+    """hidden_feet: bridge - frames where a nearer person covers someone's legs are left out
+    and interpolated from the frames around them; the walk keeps its speed."""
+    h = fit_homography(cam.ground_to_pixel(ground_points), ground_points)
+    raw = _synthetic_raw(cam, [(1, "person", (-5, 10), (1.4, 0.0), 120, set())])
+    walker = raw.set_index("frame")
+    front = []
+    for f in range(40, 60):                       # someone nearer, over the walker's legs
+        b = walker.loc[f]
+        front.append((9, "person", 0, f, b["time_s"], b["x1"], b["y2"] - 50, b["x2"],
+                      b["y2"] + 60, 0.8, False))
+    raw = pd.concat([raw, pd.DataFrame(front, columns=raw.columns)], ignore_index=True)
+    cfg["cleaning"]["hidden_feet"] = "bridge"
+    points, _ = process_tracks(raw, cfg, h, FPS, 1, log=lambda *_: None)
+    p1 = points[points["track_id"] == 1].set_index("frame")
+    assert (p1.loc[40:59, "source"] == "interpolated").all()
+    assert (p1.loc[:39, "source"] == "detected").all()
+    assert abs(p1["speed"].iloc[10:-10].mean() - 1.4) < 0.02

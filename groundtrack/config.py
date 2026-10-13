@@ -114,6 +114,8 @@ DEFAULTS: dict[str, Any] = {
         "smooth_polyorder": 2,
         "radial_smoothing": True,  # smooth depth (along the view ray) more than sideways
         "drop_passengers": True,   # people inside a bus / car box most of the time: passengers
+        "hidden_feet": "keep",   # "bridge": leave out detections whose feet are hidden behind
+                                 # nearer people (crowds), interpolate across them
         "min_moving_speed": 0.3,  # m/s below which heading is held from the last moving sample
         "recover_occluded_feet": True,  # rebuild foot points of boxes squished by occlusion
         "squish_ratio": 0.8,      # box shorter than this x its normal height = squished
