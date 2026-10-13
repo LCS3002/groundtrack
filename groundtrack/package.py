@@ -298,6 +298,9 @@ def key_figures(stats: dict, summary: pd.DataFrame, groups, cam: dict | None,
         rows.append(("camera_looking", "Camera looking", pf._compass(cam["yaw_deg"]), ""))
     if rmse_m is not None and np.isfinite(rmse_m):
         rows.append(("calibration_rmse", "Calibration error (RMSE)", round(float(rmse_m), 2), "m"))
+    if stats.get("people_feet_hidden_share") is not None:
+        rows.append(("people_feet_hidden", "People with feet hidden (crowd)",
+                     stats["people_feet_hidden_share"], "0..1"))
     chk = stats.get("calibration_check")
     if chk:
         rows.append(("implied_person_height", "People height check",

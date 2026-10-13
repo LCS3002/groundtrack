@@ -776,11 +776,27 @@ RMS. Real footage will be worse; that's what this check is for.
   a window up to 4x longer, as a local straight line (`cleaning.radial_smoothing`). On that clip
   the share of impossibly fast walkers at 15-30 m fell from 48 % to 33 %. On a well-filmed clip
   it fell from 6 % to 1 %.
-* **Bus passengers are dropped.** People seen through bus or car windows move at the vehicle's
-  speed. A "person" track whose box sits inside a vehicle's box for 60 % or more of its frames
-  is a passenger and is removed (`cleaning.drop_passengers`). People walking past a vehicle
-  overlap it only briefly (10-20 % of their frames). On the Trafalgar clips this removed 18-31
-  passenger tracks per busy street clip.
+* **Vehicle occupants are dropped.** Drivers and passengers seen through car or bus windows move
+  at the vehicle's speed. A "person" track counts as an occupant, and is removed
+  (`cleaning.drop_passengers`), only if all of these hold:
+  * its box sits inside the same vehicle's box for 60 % or more of its frames;
+  * it stays at a steady spot in that box;
+  * its box ends above the vehicle's bottom edge (inside, not standing on the road);
+  * the vehicle moves.
+
+  People walking past or in front of a vehicle (even one crawling at walking pace), or standing
+  by a parked one, are kept. On the Trafalgar clips this finds 0-5 occupants per clip. A looser
+  first version (inside 60 % of the time, nothing else) also caught pedestrians in front of
+  buses and was replaced.
+* **Feet hidden in a crowd are flagged.** From a low camera into a crowd, most people's feet are
+  hidden behind the people in front. Their ground position then comes from where the box is
+  cut off, so their positions and speeds are unreliable, and often too fast. Every track gets
+  `feet_hidden_share` in `track_metrics.csv`; the clip's share is in `stats.json` and
+  `metrics.csv`. Above 30 % the run log warns. Example: Trafalgar 6354 and 6355, filmed at
+  1.9 m and 3.5 m into the crowd at St Martin's Place, have feet hidden 56-70 % of the time and
+  ~20 % of their "people" read faster than 2.5 m/s. Clips filmed from higher up show ~5 %.
+  This is a limit of the footage, not of the calibration: the people heights there are
+  consistent, and no fit can see feet that are hidden. A higher camera avoids it.
 * **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
   markings to ~10 cm. Every run with vehicles compares each long, straight track with the
   lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as

@@ -366,3 +366,38 @@ def test_passengers_inside_a_bus_are_dropped():
         rows.append((2, "person", f, x, 300, x + 30, 380))
     raw = pd.DataFrame(rows, columns=["track_id", "class", "frame", "x1", "y1", "x2", "y2"])
     assert passenger_tracks(raw) == {1}
+
+
+def test_people_in_front_of_a_vehicle_are_kept():
+    """Inside a vehicle's box the whole time, but not riding in it: someone standing by a
+    parked car, someone walking across the front of a moving bus, and someone walking just
+    ahead of a car crawling at walking pace (feet below the car's bottom edge)."""
+    from groundtrack.trajectories import passenger_tracks
+
+    rows = []
+    for f in range(30):
+        rows.append((7, "car", f, 600, 300, 800, 400))                            # parked
+        rows.append((3, "person", f, 680, 280, 710, 380))                         # stands by it
+        rows.append((9, "bus", f, 100 + 6 * f, 200, 700 + 6 * f, 420))            # moving bus
+        x = 150 + 15 * f                                                        # walks across
+        rows.append((4, "person", f, x, 300, x + 30, 380))
+        rows.append((8, "car", f, 900 + 4 * f, 300, 1100 + 4 * f, 400))         # crawls
+        rows.append((5, "person", f, 980 + 4 * f, 290, 1010 + 4 * f, 410))      # walks ahead of it
+    raw = pd.DataFrame(rows, columns=["track_id", "class", "frame", "x1", "y1", "x2", "y2"])
+    assert passenger_tracks(raw) == set()
+
+
+def test_feet_hidden_behind_a_nearer_person():
+    """In a crowd seen from low down the far person's legs are behind the near one: flagged.
+    Two people side by side, or one in front of a car, are not."""
+    from groundtrack.trajectories import feet_hidden
+
+    raw = pd.DataFrame([
+        (1, "person", 0, 100, 100, 140, 200),     # far, legs covered by 2
+        (2, "person", 0, 95, 150, 145, 300),      # near, reaches lower
+        (3, "person", 0, 400, 100, 440, 200),     # side by side with 4
+        (4, "person", 0, 460, 110, 500, 210),
+        (5, "person", 0, 700, 100, 740, 200),     # in front of a car: only people hide feet
+        (6, "car", 0, 650, 160, 900, 260),
+    ], columns=["track_id", "class", "frame", "x1", "y1", "x2", "y2"])
+    assert feet_hidden(raw).tolist() == [True, False, False, False, False, False]

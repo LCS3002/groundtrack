@@ -141,6 +141,9 @@ def stage_process(cfg: Config, run_dir: Path, log=print, raw: pd.DataFrame | Non
     stats["ground"] = ({"model": "terrain", "datum_m": round(h.ground_z_m, 2),
                         "source": Path(h.terrain_path).name}
                        if h.terrain is not None else {"model": "plane"})
+    hidden = _feet_hidden_check(summary, log)
+    if hidden is not None:
+        stats["people_feet_hidden_share"] = hidden
     check = _people_height_check(cfg, raw, h, reg, log)
     if check:
         stats["calibration_check"] = check
@@ -276,6 +279,25 @@ def _roads_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dic
     log(f"  calibration check: {c[0]['value']} of vehicle positions within 6 m of a mapped road"
         + (" -> consistent" if c[0]["ok"] else " -> CHECK the calibration"))
     return {"vehicles_on_roads": c[0]["value"], "ok": c[0]["ok"], "note": c[0]["note"]}
+
+
+def _feet_hidden_check(summary: pd.DataFrame, log) -> float | None:
+    """How often people's feet are hidden behind nearer people (detections, all tracks); warn
+    when it is most of the time: a crowd seen from low down, positions and speeds doubtful."""
+    from .trajectories import FEET_HIDDEN_WARN
+
+    if not len(summary) or "feet_hidden_share" not in summary:
+        return None
+    ppl = summary[summary["class"] == "person"]
+    if not len(ppl):
+        return None
+    share = float(np.average(ppl["feet_hidden_share"], weights=ppl["n_points"]))
+    if share > FEET_HIDDEN_WARN:
+        log(f"  WARNING: people's feet are hidden behind others in {share:.0%} of the frames "
+            "(a crowd seen from low down): their ground positions come from where the boxes "
+            "are cut off, so people's positions and speeds here are doubtful (often too fast). "
+            "Per track: feet_hidden_share in track_metrics.csv. A higher camera avoids it.")
+    return round(share, 3)
 
 
 def _people_height_check(cfg: Config, raw: pd.DataFrame, h: Homography, reg, log) -> dict | None:

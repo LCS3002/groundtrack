@@ -357,29 +357,87 @@ def max_range_for(cfg: Config, h: Homography, group: str) -> float | None:
 
 
 # --------------------------------------------------------------------------- pipeline
-PASSENGER_SHARE = 0.6     # a person inside a vehicle's box this often is a passenger
+PASSENGER_SHARE = 0.6     # a person inside one vehicle's box this often,
+PASSENGER_STEADY = 0.1    # at a steady spot in it (spread, as a share of the box size),
+PASSENGER_MOVE = 0.25     # while the vehicle moves this many box widths: a passenger
 VEHICLE_BOXES = ("bus", "car", "truck", "train")
 
 
 def passenger_tracks(raw: pd.DataFrame, share: float = PASSENGER_SHARE) -> set:
-    """Person tracks that sit inside a vehicle's box (same frame) for most of their life:
-    passengers seen through bus / car windows, who move at the vehicle's speed. People
-    walking past a vehicle overlap it only briefly (~10-20 % of their frames)."""
+    """Person tracks that ride in a vehicle: passengers seen through bus / car windows, who
+    move at the vehicle's speed. A person is one when its box centre sits inside the box of
+    one and the same vehicle for most of its frames, at a steady spot in that box, while the
+    vehicle moves, its box ending above the vehicle's bottom edge (seen through a window, not
+    standing on the road). People walking past or in front of a vehicle overlap it briefly,
+    move across its box or reach below it; people by a vehicle that stands still are kept."""
     veh = raw[raw["class"].isin(VEHICLE_BOXES)]
     ppl = raw[raw["class"] == "person"]
     if veh.empty or ppl.empty:
         return set()
-    boxes = {f: g[["x1", "y1", "x2", "y2"]].to_numpy(float) for f, g in veh.groupby("frame")}
-    cx = ((ppl["x1"] + ppl["x2"]) / 2).to_numpy()
-    cy = ((ppl["y1"] + ppl["y2"]) / 2).to_numpy()
-    inside = np.zeros(len(ppl), bool)
-    for k, f in enumerate(ppl["frame"].to_numpy()):
-        B = boxes.get(f)
-        if B is not None:
-            inside[k] = bool(((B[:, 0] <= cx[k]) & (cx[k] <= B[:, 2])
-                              & (B[:, 1] <= cy[k]) & (cy[k] <= B[:, 3])).any())
-    frac = pd.Series(inside, index=ppl.index).groupby(ppl["track_id"]).mean()
-    return set(frac.index[frac >= share])
+    boxes = {f: (g["track_id"].to_numpy(), g[["x1", "y1", "x2", "y2"]].to_numpy(float))
+             for f, g in veh.groupby("frame")}
+    out = set()
+    for tid, p in ppl.groupby("track_id"):
+        cx = ((p["x1"] + p["x2"]) / 2).to_numpy(float)
+        cy = ((p["y1"] + p["y2"]) / 2).to_numpy(float)
+        by = p["y2"].to_numpy(float)
+        held = []   # per frame inside a vehicle: vehicle, place in its box, its centre, width
+        for k, f in enumerate(p["frame"].to_numpy()):
+            if f not in boxes:
+                continue
+            ids, B = boxes[f]
+            m = ((B[:, 0] <= cx[k]) & (cx[k] <= B[:, 2]) & (B[:, 1] <= cy[k]) & (cy[k] <= B[:, 3])
+                 & (by[k] <= B[:, 3] - 0.1 * (B[:, 3] - B[:, 1])))       # feet off the road
+            if not m.any():
+                continue
+            j = np.flatnonzero(m)[np.argmin(((B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1]))[m])]
+            w, h = max(B[j, 2] - B[j, 0], 1.0), max(B[j, 3] - B[j, 1], 1.0)
+            held.append((ids[j], (cx[k] - B[j, 0]) / w, (cy[k] - B[j, 1]) / h,
+                         (B[j, 0] + B[j, 2]) / 2, (B[j, 1] + B[j, 3]) / 2, w))
+        if len(held) < share * len(p):
+            continue
+        a = np.array(held, float)
+        a = a[a[:, 0] == pd.Series(a[:, 0]).mode().iloc[0]]          # the one vehicle
+        if len(a) < share * len(p):
+            continue
+        steady = max(a[:, 1].std(), a[:, 2].std()) <= PASSENGER_STEADY
+        moved = np.hypot(np.ptp(a[:, 3]), np.ptp(a[:, 4])) >= PASSENGER_MOVE * np.median(a[:, 5])
+        if steady and moved:
+            out.add(tid)
+    return out
+
+
+FEET_COVER = 0.4          # a nearer person's box over this share of the width of one's lowest
+                          # third: that person's feet are hidden
+FEET_HIDDEN_WARN = 0.3    # a clip where people's feet are hidden this often: positions doubtful
+
+
+def feet_hidden(raw: pd.DataFrame) -> np.ndarray:
+    """Per row: a person whose feet are hidden behind a nearer person (a box reaching lower in
+    the image that covers the lowest third of this one). From a low camera into a crowd most
+    feet are hidden; the ground position then comes from where the box is cut off, so
+    positions and speeds of those people are unreliable (they read too far / too fast)."""
+    out = np.zeros(len(raw), bool)
+    is_p = (raw["class"] == "person").to_numpy()
+    if is_p.sum() < 2:
+        return out
+    pos = np.flatnonzero(is_p)
+    B_all = raw[["x1", "y1", "x2", "y2"]].to_numpy(float)[pos]
+    frames = raw["frame"].to_numpy()[pos]
+    order = np.argsort(frames, kind="stable")
+    for grp in np.split(order, np.flatnonzero(np.diff(frames[order])) + 1):
+        if len(grp) < 2:
+            continue
+        B = B_all[grp]
+        hgt = (B[:, 3] - B[:, 1])[:, None]
+        width = np.maximum(B[:, 2] - B[:, 0], 1.0)[:, None]
+        over = np.minimum(B[:, None, 2], B[None, :, 2]) - np.maximum(B[:, None, 0], B[None, :, 0])
+        nearer = B[None, :, 3] > B[:, None, 3] + 0.05 * hgt        # the other reaches lower
+        reaches = B[None, :, 1] < B[:, None, 3] - 0.35 * hgt       # ... and up into our legs
+        cover = np.where(nearer & reaches, over, 0.0) / width
+        np.fill_diagonal(cover, 0.0)
+        out[pos[grp]] = cover.max(axis=1) > FEET_COVER
+    return out
 
 
 def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, stride: int = 1,
@@ -402,6 +460,7 @@ def process_tracks(raw: pd.DataFrame, cfg: Config, h: Homography, fps: float, st
         if pas:
             log(f"  {len(pas)} 'person' tracks inside a vehicle (passengers) dropped")
             raw = raw[~raw["track_id"].isin(pas)]
+    raw["feet_hidden"] = feet_hidden(raw)
     raw = raw[raw["class"].isin(cfg.classes)]
     uv = None
     if clean.get("recover_occluded_feet", True):
@@ -652,6 +711,8 @@ def _process_segment(seg: Segment, group: Group, cfg: Config, h, fps, stride, dt
         "mean_speed": round(float(speed.mean()), 3),
         "median_speed": round(float(np.median(speed)), 3),
         "max_speed": round(float(speed.max()), 3),
+        "feet_hidden_share": round(float(df["feet_hidden"].astype(bool).mean()), 3)
+        if "feet_hidden" in df else 0.0,
         "start_x": round(float(xs[0]), 3), "start_y": round(float(ys[0]), 3),
         "end_x": round(float(xs[-1]), 3), "end_y": round(float(ys[-1]), 3),
     }
