@@ -380,8 +380,23 @@ def build_package(cfg: Config, run_dir: Path, raster: GeoRaster | None = None,
               images / "insitu_tracks.png")       # as a frame of the overlay video
         _save(insitu["trails"], images / "insitu_tracks_layer.png")
         _save(insitu["boxes"], images / "insitu_boxes_layer.png")
+        # the busiest moment of the clip, full resolution: every trail, dots and boxes then
+        raw = pd.read_csv(run.raw_tracks)
+        best = pf.busiest_frame(raw, fps, float(cfg["cleaning"]["min_track_s"]))
+        bi = pf.insitu_layers(video, run.root, cfg, fps, int(meta["height"]), frame=best,
+                              line_px=1.6 * int(meta["height"]) / 1400)
+        _save(_over(_over(bi["base"], bi["trails"]), bi["boxes"]), images / "insitu_best.png")
     else:
         log(f"images: footage {video} not found, in-situ images skipped")
+
+    # ---- speed charts with their labels: the histogram, and with a fitted normal curve
+    from .visuals import plot_speed_histogram
+
+    if len(summary):
+        run.extras.mkdir(parents=True, exist_ok=True)
+        plot_speed_histogram(summary, cfg, run.extras / "speed_histogram.png")
+        plot_speed_histogram(summary, cfg, run.extras / "speed_distribution.png",
+                             normal_fit=True)
 
     # ---- labels (one speed legend per group when several are present)
     den_grad = og.inferno_gradient()

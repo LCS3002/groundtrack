@@ -269,7 +269,11 @@ def plot_flow_field(field: pd.DataFrame, points: pd.DataFrame, raster: GeoRaster
 
 
 # --------------------------------------------------------------------------- histogram
-def plot_speed_histogram(summary: pd.DataFrame, cfg: Config, path: Path) -> None:
+def plot_speed_histogram(summary: pd.DataFrame, cfg: Config, path: Path,
+                         normal_fit: bool = False) -> None:
+    """Mean speed per track, one panel per group: bars in the speed colours, mean (solid) and
+    median (dotted). normal_fit: also the fitted normal distribution (bell curve) over the
+    bars, scaled to the counts, with its mean and spread (sigma) in the panel."""
     groups = [g for g in cfg.groups if len(summary) and g in set(summary["group"])]
     n = max(len(groups), 1)
     fig, axes = plt.subplots(1, n, figsize=(5.2 * n, 3.8), squeeze=False)
@@ -288,8 +292,16 @@ def plot_speed_histogram(summary: pd.DataFrame, cfg: Config, path: Path) -> None
             mean, med = float(np.mean(vals)), float(np.median(vals))
             ax.axvline(mean, color=INK, lw=1, ls="-")
             ax.axvline(med, color=INK, lw=1, ls=":")
-            ax.text(0.98, 0.95, f"n = {len(vals)} tracks\nmean {mean:.2f} m/s\n"
-                    f"median {med:.2f} m/s", transform=ax.transAxes, ha="right", va="top",
+            note = f"n = {len(vals)} tracks\nmean {mean:.2f} m/s\nmedian {med:.2f} m/s"
+            if normal_fit and len(vals) > 2:
+                sd = float(np.std(vals, ddof=1))
+                if sd > 0:
+                    xs = np.linspace(lo, hi, 400)
+                    pdf = np.exp(-0.5 * ((xs - mean) / sd) ** 2) / (sd * np.sqrt(2 * np.pi))
+                    ax.plot(xs, pdf * len(vals) * (edges[1] - edges[0]), color=INK, lw=1.4,
+                            zorder=4)
+                    note += f"\nnormal fit: {mean:.2f} +- {sd:.2f} m/s"
+            ax.text(0.98, 0.95, note, transform=ax.transAxes, ha="right", va="top",
                     fontsize=8, color=INK)
         ax.set_xlim(lo, hi)
         ax.set_xlabel("mean track speed (m/s)" + ("; top axis km/h" if hi > 8 else ""),
@@ -302,7 +314,9 @@ def plot_speed_histogram(summary: pd.DataFrame, cfg: Config, path: Path) -> None
             sec.tick_params(labelsize=7)
         ax.tick_params(labelsize=8)
     fig.suptitle(f"{cfg.site}: mean speed per track\nsolid line = mean, dotted = median, "
-                 "last bar includes faster tracks", fontsize=9, x=0.01, ha="left")
+                 + "last bar includes faster tracks"
+                 + ("\ncurve = fitted normal distribution" if normal_fit else ""),
+                 fontsize=9, x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(path, dpi=200, facecolor="white")
     plt.close(fig)

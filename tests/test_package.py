@@ -98,3 +98,17 @@ def test_plan_extent_ignores_one_stray_track():
     stray = pd.DataFrame({"x": np.linspace(400, 420, 30), "y": np.full(30, 50.0)})
     x0, x1, _, _ = plan_extent(pd.concat([pts, stray], ignore_index=True))
     assert x1 < 150
+
+
+def test_busiest_frame_and_speed_distribution(mixed_run, tmp_path):
+    from groundtrack.portfolio import busiest_frame
+    from groundtrack.visuals import plot_speed_histogram
+
+    raw = pd.DataFrame({"track_id": [1, 1, 2, 2, 3, 3, 3], "frame": [0, 60, 30, 60, 50, 60, 90],
+                        "predicted": [False] * 7})
+    assert busiest_frame(raw, fps=30, min_track_s=0.5) == 60       # 3 tracks in view at once
+    run, _ = mixed_run
+    summary = pd.read_csv(run.tracks)
+    out = tmp_path / "dist.png"
+    plot_speed_histogram(summary, default_config(), out, normal_fit=True)
+    assert out.stat().st_size > 10_000

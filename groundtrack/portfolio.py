@@ -232,6 +232,20 @@ def _box_layer(shape, boxes, width: float) -> np.ndarray:
     return np.dstack([rgb, cov * 255]).clip(0, 255).astype(np.uint8)
 
 
+def busiest_frame(raw: pd.DataFrame, fps: float, min_track_s: float = 1.0) -> int:
+    """The frame where the most tracked objects (tracks lasting min_track_s or longer, not
+    predicted) are in view at once; ties: the one nearest the middle of the clip."""
+    r = raw[~raw["predicted"].astype(str).str.lower().isin(["true", "1"])]
+    span = r.groupby("track_id")["frame"].agg(lambda f: (f.max() - f.min()) / fps)
+    r = r[r["track_id"].isin(span.index[span >= min_track_s])]
+    if r.empty:
+        return int((raw["frame"].min() + raw["frame"].max()) // 2)
+    n = r.groupby("frame")["track_id"].nunique()
+    mid = (n.index.min() + n.index.max()) / 2
+    best = n[n == n.max()]
+    return int(best.index[np.argmin(np.abs(best.index.to_numpy() - mid))])
+
+
 def insitu_panel(video: Path, run_dir: Path, cfg: Config, fps: float, out_h: int,
                  frame: int | None = None, line_px: float = 1.6):
     L = insitu_layers(video, run_dir, cfg, fps, out_h, frame, line_px)
