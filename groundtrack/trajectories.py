@@ -176,6 +176,35 @@ def savgol_window(n: int, window_s: float, dt: float, polyorder: int) -> int:
     return w if w > polyorder else 0
 
 
+RADIAL_MAX = 4.0     # the depth (along-ray) window grows at most to 4x the group's window
+
+
+def smooth_radial(x: np.ndarray, y: np.ndarray, dt: float, window_s: float, cam: dict,
+                  polyorder: int = 2, max_factor: float = RADIAL_MAX):
+    """Smooth a ground path more along the camera's line of sight than across it.
+
+    From a low camera one pixel of foot movement is ~d/f metres sideways but ~d^2/(f H)
+    metres in depth (d distance, H camera height), so far away the depth wobbles ~d/H times
+    more. The path is smoothed in polar coordinates around the camera: the angle (sideways)
+    with the group's window, the distance (depth) with a window longer by (d/H)^(2/3) (the
+    noise of a Savitzky-Golay derivative falls with window^1.5), at most max_factor x, and as a
+    local straight line when depth is coarse."""
+    cx, cy, H = float(cam["E"]), float(cam["N"]), max(abs(float(cam["height_m"])), 0.5)
+    r = np.hypot(x - cx, y - cy)
+    th = np.unwrap(np.arctan2(y - cy, x - cx))
+    ratio = float(np.median(np.sqrt(r ** 2 + H ** 2) / H))
+    k = float(np.clip(ratio ** (2 / 3), 1.0, max_factor))
+    # depth: a straight line (constant speed) through the longer window - over a few seconds a
+    # walker's distance from the camera changes steadily; a curve would follow the wobble
+    rs, _, rv, _ = smooth_and_differentiate(r, r, dt, window_s * k, 1 if k > 1.5 else polyorder)
+    ts, _, tv, _ = smooth_and_differentiate(th, th, dt, window_s, polyorder)
+    c, sn = np.cos(ts), np.sin(ts)
+    xs, ys = cx + rs * c, cy + rs * sn
+    vx = rv * c - rs * sn * tv
+    vy = rv * sn + rs * c * tv
+    return xs, ys, vx, vy
+
+
 def smooth_and_differentiate(x: np.ndarray, y: np.ndarray, dt: float, window_s: float,
                              polyorder: int = 2):
     """Savitzky-Golay smoothed positions and their time derivative (m/s)."""
@@ -562,7 +591,11 @@ def _process_segment(seg: Segment, group: Group, cfg: Config, h, fps, stride, dt
 
     x, y, u, v = interp("gx"), interp("gy"), interp("u"), interp("v")
     t = frames / fps
-    xs, ys, vx, vy = smooth_and_differentiate(x, y, dt, group.smooth_window_s, polyorder)
+    cam = getattr(h, "camera_params", None)
+    if clean.get("radial_smoothing", True) and cam and cam.get("height_m"):
+        xs, ys, vx, vy = smooth_radial(x, y, dt, group.smooth_window_s, cam, polyorder)
+    else:
+        xs, ys, vx, vy = smooth_and_differentiate(x, y, dt, group.smooth_window_s, polyorder)
     hd = heading_deg(vx, vy, float(clean["min_moving_speed"]))
     xs, ys = vehicle_centre(xs, ys, hd, group, cls, h, u, v)
     speed = np.hypot(vx, vy)

@@ -760,6 +760,14 @@ RMS. Real footage will be worse; that's what this check is for.
   `beyond_limit = True` in `points.csv` (positions there are ~0.5-1 m less precise). They fill
   in, for example, the middle of Trafalgar Square seen from the portico. Filter on the column
   for the precise set.
+* **Depth is smoothed more than sideways movement.** From a low camera one pixel of foot
+  movement is about d/f metres sideways but d²/(f·H) metres in depth (d distance, H camera
+  height), so far away the depth wobbles d/H times more: on an eye-level Trafalgar clip, speeds
+  along the line of sight reached 7 m/s at 15-30 m (90th percentile) against 0.9 m/s across it.
+  Each path is smoothed around the camera: the angle with the group's window, the distance with
+  a window up to 4x longer, as a local straight line (`cleaning.radial_smoothing`). On that clip
+  the share of impossibly fast walkers at 15-30 m fell from 48 % to 33 %. On a well-filmed clip
+  it fell from 6 % to 1 %.
 * **Lane check (real ground truth, no extra filming).** The aerial shows the painted lane
   markings to ~10 cm. Every run with vehicles compares each long, straight track with the
   lane direction under it (`stats.json` → `tracking_check`): a calibration rotation shows as
