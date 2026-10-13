@@ -71,12 +71,16 @@ class VideoSink:
         self.writer = None
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
+            import tempfile
+
+            self._err = tempfile.TemporaryFile()        # ffmpeg's own messages, for errors
             self.proc = subprocess.Popen(
-                [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                [ffmpeg, "-y", "-loglevel", "error", "-hide_banner",
+                 "-f", "rawvideo", "-pix_fmt", "bgr24",
                  "-s", f"{self.size[0]}x{self.size[1]}", "-r", f"{fps:.6f}", "-i", "-",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
                  "-pix_fmt", "yuv420p", "-movflags", "+faststart", self.path],
-                stdin=subprocess.PIPE)
+                stdin=subprocess.PIPE, stderr=self._err)
         else:
             self.writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"mp4v"), fps,
                                           self.size)
@@ -85,14 +89,27 @@ class VideoSink:
         if frame.shape[1] != self.size[0] or frame.shape[0] != self.size[1]:
             frame = frame[: self.size[1], : self.size[0]]
         if self.proc is not None:
-            self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            try:
+                self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            except OSError as e:          # ffmpeg stopped: say why, not just "Invalid argument"
+                raise RuntimeError(f"ffmpeg stopped writing {self.path} "
+                                   f"(exit {self.proc.poll()}): {self._ffmpeg_says()}") from e
         else:
             self.writer.write(frame)
+
+    def _ffmpeg_says(self) -> str:
+        try:
+            self.proc.wait(timeout=5)
+            self._err.seek(0)
+            return self._err.read().decode("utf-8", "replace").strip()[-600:] or "no message"
+        except Exception:  # noqa: BLE001
+            return "no message"
 
     def release(self) -> None:
         if self.proc is not None:
             self.proc.stdin.close()
-            self.proc.wait()
+            if self.proc.wait() != 0:
+                raise RuntimeError(f"ffmpeg failed on {self.path}: {self._ffmpeg_says()}")
         elif self.writer is not None:
             self.writer.release()
 
