@@ -65,8 +65,34 @@ if rows:
     cells = geo.createPointGroup("cells")
     pts = geo.createPoints([hou.Vector3(float(r["x"]), float(r.get("y") or 0.0), float(r["z"])) for r in rows])
     cells.add(pts)
-    geo.setPointFloatAttribValues("v", [c for r in rows
-                                        for c in (float(r["vx"]), float(r.get("vy") or 0.0), float(r["vz"]))])
+    # the flow follows its sheet: where the field slopes (terrain heights, ramps, folds) and the
+    # file has no vertical velocity, the vertical part is the slope along the flow - otherwise
+    # particles slide straight out of a sloping field and stall
+    xyz = [(float(r["x"]), float(r.get("y") or 0.0), float(r["z"])) for r in rows]
+    vel3 = [[float(r["vx"]), float(r.get("vy") or 0.0), float(r["vz"])] for r in rows]
+    grid = {}
+    for i, (x, y, z) in enumerate(xyz):
+        grid.setdefault((round(x / cell), round(z / cell)), []).append(i)
+
+    def height(i, di, dk):
+        """Height of the same layer's neighbouring cell (stacked layers are kept apart)."""
+        x, y, z = xyz[i]
+        cand = grid.get((round(x / cell) + di, round(z / cell) + dk))
+        if not cand:
+            return None
+        j = min(cand, key=lambda j: abs(xyz[j][1] - y))
+        return xyz[j][1] if abs(xyz[j][1] - y) < 3 * cell else None
+
+    def slope(i, a, b):
+        y = xyz[i][1]
+        hp, hm = height(i, *a), height(i, *b)
+        steps = (hp is not None) + (hm is not None)
+        return 0.0 if not steps else ((hp if hp is not None else y) - (hm if hm is not None else y)) / (steps * cell)
+
+    for i, v in enumerate(vel3):
+        if abs(v[1]) < 1e-9:
+            v[1] = v[0] * slope(i, (1, 0), (-1, 0)) + v[2] * slope(i, (0, 1), (0, -1))
+    geo.setPointFloatAttribValues("v", [c for v in vel3 for c in v])
     for name in ("speed", "density", "confidence", "smax"):
         geo.setPointFloatAttribValues(name, [float(r[name]) for r in rows])
     geo.setPointFloatAttribValues("pscale", [0.75 * cell] * len(rows))
@@ -76,8 +102,7 @@ if rows:
     med = max(dens[len(dens) // 2], 1e-12)
     w = [min(max(float(r["density"]) / med, 0.05), 20.0) for r in rows]
     geo.setPointFloatAttribValues("w", w)
-    geo.setPointFloatAttribValues("vel", [c * wi for r, wi in zip(rows, w)
-                                          for c in (float(r["vx"]), float(r.get("vy") or 0.0), float(r["vz"]))])
+    geo.setPointFloatAttribValues("vel", [c * wi for v, wi in zip(vel3, w) for c in v])
     # emitter seeds where people / vehicles were: busier cells more (square root of the
     # density, so quiet places still emit), jittered inside the cell
     rnd = random.Random(node.evalParm("seed"))
