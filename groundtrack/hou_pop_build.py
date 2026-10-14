@@ -56,6 +56,8 @@ for name in ("speed", "density", "confidence", "smax", "pscale", "w"):
     geo.addAttrib(hou.attribType.Point, name, 0.0)
 geo.addAttrib(hou.attribType.Point, "v", (0.0, 0.0, 0.0))
 geo.addAttrib(hou.attribType.Point, "vel", (0.0, 0.0, 0.0))     # v * w, for the volume
+for name in ("v", "vel"):        # vectors: moving / scaling / mirroring the field turns them with it
+    geo.findPointAttrib(name).setOption("type", "vector")
 geo.addAttrib(hou.attribType.Global, "field_file", "")
 geo.setGlobalAttribValue("field_file", rel)
 if rows:
@@ -138,8 +140,16 @@ def field_node(geo, mod):
     return py
 
 
+def scale_of(place):
+    """Expression: the uniform scale of the place node at relative path `place` (its smallest axis)."""
+    return ('(abs(ch("{0}/scale")) * min(abs(ch("{0}/sx")), min(abs(ch("{0}/sy")), abs(ch("{0}/sz")))))'
+            .format(place))
+
+
 def chain(geo, upstream, mod, colours):
-    """place -> field volume / seeds -> POP sim -> particles + trails -> OUT."""
+    """place -> field volume / seeds -> POP sim -> particles + trails -> OUT. Scaling the field in
+    place scales everything with it: its vectors, voxels, the pull (Air Resistance: the force is
+    quadratic in the speed difference, so 1 / scale), the slow-particle kill and the dots."""
     place = geo.createNode("xform", "place")
     place.setInput(0, upstream)
     place.parmTuple("p").set((mod["centre"][0], 0.0, mod["centre"][1]))   # pivot: the module
@@ -154,7 +164,9 @@ def chain(geo, upstream, mod, colours):
     vol.parm("attributes").set("vel w")      # both averaged over the cells nearby ...
     vol.parm("densityattrib").set("")
     vol.parm("normalize").set(0)
-    vol.parm("voxelsize").set(mod["cell"] * 0.5)
+    # voxels and splats follow place's scale, so a scaled-down field keeps its detail
+    vol.parm("voxelsize").setExpression("max(%g * %s, 0.0001)" % (mod["cell"] * 0.5, scale_of("../place")))
+    vol.parm("particlescale").setExpression(scale_of("../place"))
     div = geo.createNode("volumewrangle", "weighted_average")
     div.setInput(0, vol)
     div.parm("snippet").set("v@vel /= max(f@w, 1e-9);   // ... so vel = sum(w v) / sum(w)")
@@ -189,11 +201,11 @@ def chain(geo, upstream, mod, colours):
     # are pushed towards its velocity, Air Resistance sets how hard)
     adv.parm("advecttype").set(mod.get("advect", "vel"))
     if mod.get("advect") == "force" and adv.parm("airresist") is not None:
-        adv.parm("airresist").set(mod.get("airresist", 1.0))
+        adv.parm("airresist").setExpression("%g / max(%s, 0.0001)" % (mod.get("airresist", 1.0), scale_of("../../place")))
     adv.parm("advectmethod").set("midpoint")
     wind = sim.createNode("popwind", "turbulence")
     wind.setInput(0, adv)
-    wind.parm("amp").set(mod["noise"])
+    wind.parm("amp").setExpression("%g * %s" % (mod["noise"], scale_of("../../place")))
     wind.bypass(True)                          # switch on for turbulence
     kill = sim.createNode("popkill", "kill_outside")
     kill.setInput(0, wind)
@@ -201,6 +213,7 @@ def chain(geo, upstream, mod, colours):
     kill.parm("rulecode").set(KILL_VEX)
     _parm(kill, hou.FloatParmTemplate("min_speed", "Min speed", 1,
                                       default_value=(mod["min_speed"],)))
+    kill.parm("min_speed").setExpression("%g * %s" % (mod["min_speed"], scale_of("../../place")))
     solver.setInput(0, obj)
     solver.setInput(2, kill)
     out.setInput(0, solver)
@@ -216,6 +229,7 @@ def chain(geo, upstream, mod, colours):
     col.parm("snippet").set(COLOUR_VEX % colours)
     _parm(col, hou.FloatParmTemplate("dot_size", "Dot size", 1,
                                      default_value=(mod["cell"] * 0.25,)))
+    col.parm("dot_size").setExpression("%g * %s" % (mod["cell"] * 0.25, scale_of("../place")))
     trail = geo.createNode("trail", "trail_points")      # the last frames' positions ...
     trail.setInput(0, col)
     trail.parm("result").set("preserve")
