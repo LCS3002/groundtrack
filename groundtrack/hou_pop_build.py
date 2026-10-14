@@ -1,7 +1,8 @@
-"""Builds the POP scene of a groundtrack Houdini kit. Runs INSIDE Houdini (hython or the
-Python shell), not as part of groundtrack:
+"""Builds the POP scene of a groundtrack Houdini kit. Runs INSIDE Houdini (hython, or Houdini's
+Python Shell), not as part of groundtrack:
 
     hython hou_pop_build.py <kit folder>        (writes <site>_pop.hip / .hipnc there)
+    Python Shell:  import os; os.environ["GT_KIT"] = r"<kit folder>"; exec(open(r"<kit folder>\hou_pop_build.py").read())
 
 The kit folder holds modules.json and fields/*.csv (written by groundtrack houdini-pop). One
 Geometry object per module (the whole site, each clip), each:
@@ -20,7 +21,8 @@ import sys
 
 import hou
 
-KIT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(__file__))
+KIT = os.path.abspath(os.environ.get("GT_KIT") or (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else
+                      os.path.dirname(globals().get("__file__", "."))))
 
 FIELD_SOP = r'''
 import csv
@@ -49,10 +51,10 @@ geo.setGlobalAttribValue("field_file", rel)
 if rows:
     cell = float(rows[0]["cell"])
     cells = geo.createPointGroup("cells")
-    pts = geo.createPoints([hou.Vector3(float(r["x"]), 0.0, float(r["z"])) for r in rows])
+    pts = geo.createPoints([hou.Vector3(float(r["x"]), float(r.get("y") or 0.0), float(r["z"])) for r in rows])
     cells.add(pts)
     geo.setPointFloatAttribValues("v", [c for r in rows
-                                        for c in (float(r["vx"]), 0.0, float(r["vz"]))])
+                                        for c in (float(r["vx"]), float(r.get("vy") or 0.0), float(r["vz"]))])
     for name in ("speed", "density", "confidence", "smax"):
         geo.setPointFloatAttribValues(name, [float(r[name]) for r in rows])
     geo.setPointFloatAttribValues("pscale", [0.75 * cell] * len(rows))
@@ -63,7 +65,7 @@ if rows:
     w = [min(max(float(r["density"]) / med, 0.05), 20.0) for r in rows]
     geo.setPointFloatAttribValues("w", w)
     geo.setPointFloatAttribValues("vel", [c * wi for r, wi in zip(rows, w)
-                                          for c in (float(r["vx"]), 0.0, float(r["vz"]))])
+                                          for c in (float(r["vx"]), float(r.get("vy") or 0.0), float(r["vz"]))])
     # emitter seeds where people / vehicles were: busier cells more (square root of the
     # density, so quiet places still emit), jittered inside the cell
     rnd = random.Random(node.evalParm("seed"))
@@ -72,7 +74,7 @@ if rows:
         pick = rnd.choices(range(len(rows)), weights=w, k=max(1, node.evalParm("seeds")))
         seeds = geo.createPointGroup("seeds")
         seeds.add(geo.createPoints([hou.Vector3(float(rows[i]["x"]) + (rnd.random() - 0.5) * cell,
-                                                0.0,
+                                                float(rows[i].get("y") or 0.0),
                                                 float(rows[i]["z"]) + (rnd.random() - 0.5) * cell)
                                     for i in pick]))
 '''
@@ -172,7 +174,11 @@ def chain(geo, upstream, mod, colours):
     adv.parm("velsource").set("sop")
     adv.parm("soppath").set("../../OUT_FIELD")
     adv.parm("fieldname").set("vel")
-    adv.parm("advecttype").set("vel")          # particles take the field's velocity
+    # "vel": particles take the field's velocity; "force": the field is a force field (they
+    # are pushed towards its velocity, Air Resistance sets how hard)
+    adv.parm("advecttype").set(mod.get("advect", "vel"))
+    if mod.get("advect") == "force" and adv.parm("airresist") is not None:
+        adv.parm("airresist").set(mod.get("airresist", 1.0))
     adv.parm("advectmethod").set("midpoint")
     wind = sim.createNode("popwind", "turbulence")
     wind.setInput(0, adv)
@@ -250,12 +256,22 @@ def main():
         om.parm("objpath%d" % i).set("/obj/%s/place" % n)
     first = next(m for m in kit["modules"] if m["name"] == names[0])
     chain(comb, om, dict(first, centre=first["centre"]), colours)
-    comb.setDisplayFlag(False)
+    comb.setDisplayFlag(bool(kit.get("show_combined")))
     comb.setPosition(hou.Vector2(0.0, -1.5 * (len(kit["modules"]) // 6 + 1)))
     note = obj.createStickyNote("about")
     note.setText(kit["note"])
     note.setSize(hou.Vector2(9.0, 4.0))
     note.setPosition(hou.Vector2(-10.0, 0.0))
+    if kit.get("vdb"):
+        for name in [m["name"] for m in kit["modules"]] + ["combined"]:
+            fld = hou.node("/obj/%s/OUT_FIELD" % name)
+            if fld is not None:
+                path = os.path.join(KIT, "%s_%s_vel.vdb" % (kit["site"], name))
+                try:
+                    fld.geometry().saveToFile(path)
+                    print("saved", path)
+                except hou.Error as e:
+                    print("could not save", path, e)
     ext = ".hip" if hou.licenseCategory() == hou.licenseCategoryType.Commercial else (
         ".hiplc" if hou.licenseCategory() == hou.licenseCategoryType.Indie else ".hipnc")
     out = os.path.join(KIT, kit["site"] + "_pop" + ext)
