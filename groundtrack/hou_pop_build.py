@@ -14,15 +14,21 @@ Geometry object per module (the whole site, each clip), each:
 
 plus an object "combined" that merges the placed modules listed in its object_merge: where
 they overlap their fields blend (density-weighted), and one simulation runs through all.
+
+From hython it builds a new scene and saves it in the kit. Inside an open scene (Houdini's Python
+Shell, or GT_ADD=1) it only adds: everything goes into one subnet /obj/groundtrack_<site>, nothing
+else in the scene is touched (not even the frame rate), and the scene is not saved.
 """
 import json
 import os
+import re
 import sys
 
 import hou
 
 KIT = os.path.abspath(os.environ.get("GT_KIT") or (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else
                       os.path.dirname(globals().get("__file__", "."))))
+ADD = os.environ.get("GT_ADD", "1" if hou.isUIAvailable() else "0") == "1"
 
 FIELD_SOP = r'''
 import csv
@@ -38,7 +44,11 @@ geo = node.geometry()
 fields = json.loads(node.evalParm("fields"))
 group = node.evalParm("group")
 rel = fields.get(group) or next(iter(fields.values()))
-path = os.path.join(hou.expandString("$HIP"), rel) if not os.path.isabs(rel) else rel
+# the kit folder first (the scene may be saved anywhere), then next to the scene
+kit = node.evalParm("kit")
+path = rel if os.path.isabs(rel) else next(
+    (p for p in (os.path.join(kit, rel), os.path.join(hou.expandString("$HIP"), rel)) if os.path.exists(p)),
+    os.path.join(kit, rel))
 conf_min = node.evalParm("min_confidence")
 with open(path, newline="") as f:
     rows = [r for r in csv.DictReader(f) if float(r["confidence"]) >= conf_min]
@@ -116,6 +126,7 @@ def field_node(geo, mod):
     groups = list(mod["fields"])
     _parm(py, hou.StringParmTemplate("fields", "Field files (JSON)", 1,
                                      default_value=(json.dumps(mod["fields"]),)))
+    _parm(py, hou.StringParmTemplate("kit", "Kit folder", 1, default_value=(KIT,)))
     _parm(py, hou.StringParmTemplate("group", "Group", 1, default_value=(mod["group"],),
                                      menu_items=groups, menu_labels=groups))
     _parm(py, hou.FloatParmTemplate("min_confidence", "Min confidence", 1,
@@ -230,13 +241,25 @@ def chain(geo, upstream, mod, colours):
 def main():
     with open(os.path.join(KIT, "modules.json"), encoding="utf-8") as f:
         kit = json.load(f)
-    hou.hipFile.clear(suppress_save_prompt=True)
-    hou.setFps(kit.get("fps", 24))
-    hou.playbar.setFrameRange(1, kit.get("frames", 480))
-    hou.playbar.setPlaybackRange(1, kit.get("frames", 480))
     colours = ", ".join("{%.4f, %.4f, %.4f}" % tuple(_lin(x) for x in c)
                         for _, c in kit["ramp"])
-    obj = hou.node("/obj")
+    if ADD:     # into the open scene: one subnet, nothing else touched
+        base = "groundtrack_" + (re.sub(r"[^A-Za-z0-9_]", "_", kit["site"]).strip("_") or "field")
+        name, i = base, 1
+        while hou.node("/obj/" + name) is not None:
+            i += 1
+            name = "%s%d" % (base, i)
+        others = hou.node("/obj").children()
+        obj = hou.node("/obj").createNode("subnet", name)
+        # right of the scene's nodes (moveToGoodPosition would move them too)
+        obj.setPosition(hou.Vector2(max([n.position()[0] for n in others], default=0.0) + 3.0,
+                                    max([n.position()[1] for n in others], default=0.0)))
+    else:       # a new scene
+        hou.hipFile.clear(suppress_save_prompt=True)
+        hou.setFps(kit.get("fps", 24))
+        hou.playbar.setFrameRange(1, kit.get("frames", 480))
+        hou.playbar.setPlaybackRange(1, kit.get("frames", 480))
+        obj = hou.node("/obj")
     placed = {}
     for k, mod in enumerate(kit["modules"]):
         geo = obj.createNode("geo", mod["name"])
@@ -253,7 +276,7 @@ def main():
     names = kit.get("combined") or [m["name"] for m in kit["modules"]][:2]
     om.parm("numobj").set(len(names))
     for i, n in enumerate(names, 1):
-        om.parm("objpath%d" % i).set("/obj/%s/place" % n)
+        om.parm("objpath%d" % i).set(placed[n].path())
     first = next(m for m in kit["modules"] if m["name"] == names[0])
     chain(comb, om, dict(first, centre=first["centre"]), colours)
     comb.setDisplayFlag(bool(kit.get("show_combined")))
@@ -264,7 +287,7 @@ def main():
     note.setPosition(hou.Vector2(-10.0, 0.0))
     if kit.get("vdb"):
         for name in [m["name"] for m in kit["modules"]] + ["combined"]:
-            fld = hou.node("/obj/%s/OUT_FIELD" % name)
+            fld = hou.node("%s/%s/OUT_FIELD" % (obj.path(), name))
             if fld is not None:
                 path = os.path.join(KIT, "%s_%s_vel.vdb" % (kit["site"], name))
                 try:
@@ -272,6 +295,10 @@ def main():
                     print("saved", path)
                 except hou.Error as e:
                     print("could not save", path, e)
+    print("force field (velocity volume, field 'vel'): %s/OUT_FIELD" % comb.path())
+    if ADD:
+        print("added %s - save the scene to keep it" % obj.path())
+        return
     ext = ".hip" if hou.licenseCategory() == hou.licenseCategoryType.Commercial else (
         ".hiplc" if hou.licenseCategory() == hou.licenseCategoryType.Indie else ".hipnc")
     out = os.path.join(KIT, kit["site"] + "_pop" + ext)
