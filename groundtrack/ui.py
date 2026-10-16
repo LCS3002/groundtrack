@@ -102,6 +102,8 @@ class Job:
 
 # --------------------------------------------------------------------------- state
 class App:
+    job_class = Job       # the desktop app runs its jobs without a console window
+
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self.jobs: dict[str, Job] = {}
@@ -365,7 +367,7 @@ class App:
                                  for j in self.jobs.values()):
             raise ValueError("another run is still going: wait for it or stop it first")
         label = f"{kind} · {cfg.site if cfg else ''}" + (f" · {run}" if run else "")
-        job = Job(kind, args, self.root, label)
+        job = self.job_class(kind, args, self.root, label)
         self.jobs[job.id] = job
         return job.summary()
 
@@ -383,7 +385,7 @@ class App:
             args += ["--title", str(opts["title"])[:120]]
         if opts.get("only_ok"):
             args.append("--only-ok")
-        job = Job("composite", args, self.root, f"combine · {name} ({len(rels)} clips)")
+        job = self.job_class("composite", args, self.root, f"combine · {name} ({len(rels)} clips)")
         self.jobs[job.id] = job
         return job.summary()
 

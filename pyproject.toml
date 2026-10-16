@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pyogrio>=0.7", "ruff"]
+app = ["pywebview>=5"]          # `groundtrack app`: the desktop window (else it opens in the browser)
 
 [project.scripts]
 groundtrack = "groundtrack.cli:main"
@@ -33,7 +34,7 @@ groundtrack = "groundtrack.cli:main"
 packages = ["groundtrack"]
 
 [tool.setuptools.package-data]
-groundtrack = ["ui.html"]
+groundtrack = ["ui.html", "desktop_web/*.*", "desktop_web/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

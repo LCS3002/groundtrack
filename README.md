@@ -25,7 +25,9 @@ GeoTIFF ─► 2 CALIBRATE (once per site) ──► homography.json   (6–8 cl
                                 scale bar, north arrow) · videos/ (with and without labels)
 ```
 
-Everything runs from the command line or from a small local web page (`groundtrack ui`, §4).
+Everything runs from the command line, from a small local web page (`groundtrack ui`), or from
+the desktop app, which also does the calibration and hands results to Houdini and Grasshopper
+(`groundtrack app`, §4).
 
 ---
 
@@ -430,6 +432,31 @@ button runs the same command as below.
 ```powershell
 groundtrack ui                      # from the project folder (the one with sites/ and runs/)
 ```
+
+**The desktop app** does the whole workflow in one window, step by step: footage and aerial,
+where the camera stood (place search or a click on the aerial), **calibration in the app** (click
+a point in the video frame, then on the aerial; the fit, its errors, a ground grid in the video
+and the camera's view on the aerial update with every pair; a loupe for precise clicks; drag
+points to move them), **the area to track** drawn on the frame, runs with live logs, results,
+combined plans, and the hand-over to **Houdini** (build a POP kit from a combined plan and open
+it, or copy the Python Shell line that adds it to the scene you have open; kits written by the
+Grasshopper plugin's Houdini Export are listed too) and **Rhino / Grasshopper** (open the models,
+copy the Grasshopper script, see whether the groundtrack-grasshopper plugin is installed). Saving a
+calibration runs `groundtrack calibrate --points-csv ... --no-gui` with the clicked pairs, so the
+result and its check images are the command line's own; every file it replaces is copied into a
+`backup/` folder first. It never writes into a Houdini or Rhino scene, and refuses to rebuild a
+kit's scene while Houdini is open.
+
+```powershell
+pip install -e ".[app]"             # pywebview: the native window (Edge WebView2 on Windows)
+groundtrack app                     # from the project folder
+groundtrack app --shortcut          # Desktop + Start-menu shortcuts that open it
+```
+
+On Windows the window has its own title bar (Snap and resizing work as usual; `--native-frame`
+keeps the Windows one). Without pywebview it opens in the browser. Folders with more kits, models
+and definitions (a results folder, say) are added under *Houdini & Grasshopper → Library
+folders*; that list is kept per user in `%APPDATA%\groundtrack\desktop.json`, outside the project.
 
 From the command line:
 
@@ -983,6 +1010,9 @@ pytest -m "not e2e"    # unit tests only (~1 min, most of it the automatic calib
 * `test_ui.py`: the local UI only accepts its own configs, files inside the project, known
   commands and safe run names; it refuses other hostnames and cross-site posts; the camera
   position is written into the config without touching the rest.
+* `test_desktop.py`: the desktop app's live calibration fit equals the CLI picker's, saving
+  pairs backs up and calibrates like `groundtrack calibrate`, the area file, kits / models /
+  combined plans found in library folders, the plugin version, and the same guards as the UI.
 * `test_e2e.py`: generates the demo video, runs calibration, YOLO, tracking and all exports, then
   checks positions (within 25 cm), speeds (within 6 %), the occlusion bridging, the package (every
   plan image and layer stacks, the metrics) and the `groundtruth` command.

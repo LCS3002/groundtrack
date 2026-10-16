@@ -348,6 +348,29 @@ def cmd_ui(args):
     serve(Path(args.root), port=args.port, open_browser=not args.no_browser)
 
 
+def cmd_app(args):
+    from .desktop import make_shortcut, serve
+
+    root = Path(args.root).resolve()
+    if args.shortcut:
+        for p in make_shortcut(root):
+            print(f"shortcut: {p}")
+        return
+    serve(root, port=args.port, window=not args.no_window, debug=args.debug,
+          custom_frame=not args.native_frame)
+
+
+def cmd_houdini_build(args):
+    """Build (again) the scene of an existing Houdini kit, e.g. one from Grasshopper."""
+    from .houdini_pop import build_scene
+
+    kit = Path(args.kit)
+    if not (kit / "modules.json").exists() or not (kit / "hou_pop_build.py").exists():
+        raise SystemExit(f"{kit} is not a Houdini kit (modules.json + hou_pop_build.py)")
+    if build_scene(kit) is None:
+        raise SystemExit(1)
+
+
 def cmd_run(args):
     from .pipeline import run_all
 
@@ -569,6 +592,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--no-browser", action="store_true")
     s.set_defaults(func=cmd_ui)
+
+    s = sub.add_parser("app", help="open the desktop app (the whole workflow in one window)")
+    s.add_argument("--root", default=".", help="project folder (with sites/, runs/)")
+    s.add_argument("--port", type=int, default=0, help="local port (default: any free one)")
+    s.add_argument("--no-window", action="store_true", help="only the server (for a browser)")
+    s.add_argument("--shortcut", action="store_true",
+                   help="make Desktop and Start-menu shortcuts to the app, then exit")
+    s.add_argument("--debug", action="store_true", help="window with developer tools")
+    s.add_argument("--native-frame", action="store_true",
+                   help="keep the Windows title bar instead of the app's own")
+    s.set_defaults(func=cmd_app)
+
+    s = sub.add_parser("houdini-build", help="build the scene of an existing Houdini kit")
+    s.add_argument("kit", help="kit folder (modules.json + hou_pop_build.py)")
+    s.set_defaults(func=cmd_houdini_build)
 
     s = common(sub.add_parser("debug-video", help="render debug.mp4 for an existing run"))
     s.add_argument("--run", default="latest")
